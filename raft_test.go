@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func TestElectionLeaderDisconnect(t *testing.T) {
 		t.Errorf("want new leader to be different from orig leader")
 	}
 	if newTerm <= origTerm {
-		t.Errorf("want newTerm <= origTerm, got %d and %d", newTerm, origTerm)
+		t.Errorf("want newTerm > origTerm, got %d and %d", newTerm, origTerm)
 	}
 }
 
@@ -79,11 +80,12 @@ func TestElectionLeaderDisconnectThenReconnect(t *testing.T) {
 
 	sleepMs(350)
 	newLeaderId, newTerm := h.CheckSingleLeader()
-
+	log.Println("newLeader", newLeaderId, newTerm)
 	h.ReconnectPeer(origLeaderId)
-	sleepMs(150)
+	sleepMs(1000)
 
 	againLeaderId, againTerm := h.CheckSingleLeader()
+	log.Println("againLeader", againLeaderId, againLeaderId)
 
 	if newLeaderId != againLeaderId {
 		t.Errorf("again leader id got %d; want %d", againLeaderId, newLeaderId)
