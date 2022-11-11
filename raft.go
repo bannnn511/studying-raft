@@ -11,9 +11,19 @@ import (
 )
 
 type CMState int
-type LogEntry struct {
+
+// CommitEntry is the data reported by raft to the commit channel.
+// Each entry notifies the client that consensus was reached on a command and
+// it can be applied to client's state machine.
+type CommitEntry struct {
+	// Command is the client command being committed.
 	Command interface{}
-	Term    int
+
+	// Index is the log index at which the client command is committed.
+	Index int
+
+	// Term is the Raft term at which the client command is committed
+	Term int
 }
 
 const DebugCM = 1
@@ -25,20 +35,56 @@ const (
 	StateDead
 )
 
+// ConsensusModule (CM) implements a single node of Raft consensus.
 type ConsensusModule struct {
-	id                 int
-	mu                 sync.Mutex
-	currentTerm        int
+	// id is the Server ID of this CM.
+	id int
+
+	// mu is mutex lock to protect concurrent access to a CM.
+	mu sync.Mutex
+
+	// peerIds is ID list of all servers in the cluster.
+	peerIds []int
+
+	// server is the server contains this CM to issues RPC calls to peers.
+	server *Server
+
+	// Persistent state on all servers.
+	// updated on stable storage before responding to RPCs.
+	currentTerm int
+	votedFor    int
+	logs        []CommitEntry
+
+	// Volatile state on all servers.
+	// commitIndex is index of the highest log entry known to be committed.
+	commitIndex int
+
+	// lastApplied is index of the highest log entry applied to state machine.
+	lastApplied int
+
+	// Volatile state on leader.
+	// for each server, index of next log entry to send to that server.
+	nextIndex []int
+	// for each server,index of the highest log entry known to be replicated on that server.
+	matchIndex []int
+
 	state              CMState
 	electionResetEvent time.Time
-	votedFor           int
-	logs               []LogEntry
-	peerIds            []int
-	server             *Server
+
+	// commitChan is the channel where this CM is going to report committed log
+	// entries. It's passed in by the client during construction.
+	commitChan chan<- CommitEntry
+
+	// newCommitReadyChan is an internal notification channel used by goroutines
+	// that commit new entries to the log to notify that these entries may be sent
+	// on commitChan.
+	newCommitReadyChan chan struct{}
 
 	logger *zap.Logger
 }
 
+// NewConsensusModule creates a CM with a serverId that contains this CM, a list of peer ids and a server.
+// ready channel to notify all CM that all peers are connected, and it is safe to start its state machine.
 func NewConsensusModule(serverId int, peerIds []int, server *Server, ready <-chan interface{}) *ConsensusModule {
 	cm := new(ConsensusModule)
 	cm.id = serverId
@@ -49,6 +95,7 @@ func NewConsensusModule(serverId int, peerIds []int, server *Server, ready <-cha
 	cm.logger = zap.NewExample()
 
 	go func() {
+		// The CM is blocked until ready is signaled.
 		<-ready
 		cm.mu.Lock()
 		cm.electionResetEvent = time.Now()
@@ -60,23 +107,35 @@ func NewConsensusModule(serverId int, peerIds []int, server *Server, ready <-cha
 }
 
 type RequestVoteArgs struct {
-	Term         int
-	CandidateId  int
+	// Term is candidate's term.
+	Term int
+
+	// CandidateId is candidate requesting vote.
+	CandidateId int
+
+	// LastLogIndex is index of last log index.
 	LastLogIndex int
-	LastLogTerm  int
+
+	// LastLogTerm is term of candidate's last log entry.
+	LastLogTerm int
 }
 
 type RequestVoteReply struct {
-	Term        int
+	// Term is current term for candidate to update itself.
+	Term int
+
+	// VoteGranted is true means candidate received vote.
 	VoteGranted bool
 }
 
+// RequestVote invoked by candidates to gather votes.
 func (cm *ConsensusModule) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	if cm.state == StateDead {
 		return nil
 	}
+	// TODO: get last log index and term
 	cm.dlog("RequestVote: %+v [currentTerm=%d, votedFor=%d]", args, cm.currentTerm, cm.votedFor)
 
 	if args.Term > cm.currentTerm {
@@ -84,6 +143,7 @@ func (cm *ConsensusModule) RequestVote(args RequestVoteArgs, reply *RequestVoteR
 		cm.becomeFollower(args.Term)
 	}
 
+	// check that request lastLogIndex and lastLogTerm must be higher than cm's last log index and term
 	if args.Term == cm.currentTerm && (cm.votedFor == -1 || cm.votedFor == args.CandidateId) {
 		reply.VoteGranted = true
 		cm.votedFor = args.CandidateId
@@ -91,25 +151,42 @@ func (cm *ConsensusModule) RequestVote(args RequestVoteArgs, reply *RequestVoteR
 	} else {
 		reply.VoteGranted = false
 	}
+
 	reply.Term = cm.currentTerm
 	cm.dlog("... RequestVote reply: %+v", reply)
+
 	return nil
 }
 
 type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
+	// Term is leader term.
+	Term int
+
+	// LeaderId for follower to redirect client.
+	LeaderId int
+
+	// PrevLogIndex is index of log entry immediately preceding the new ones in its log.
 	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []interface{}
+
+	// PrevLogTerm is term of prevLogIndex.
+	PrevLogTerm int
+
+	// LeaderCommit is leader's commit index.
 	LeaderCommit int
+
+	// log entries to store.
+	Entries []CommitEntry
 }
 
 type AppendEntriesReply struct {
-	Term    int
+	// current term for leader to update itself.
+	Term int
+
+	// True if follower contained entry matching PrevLogIndex and PrevLogTerm.
 	Success bool
 }
 
+// AppendEntries invoked by leader to replicated log entries, also used as heartbeat.
 func (cm *ConsensusModule) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -129,14 +206,77 @@ func (cm *ConsensusModule) AppendEntries(args AppendEntriesArgs, reply *AppendEn
 		if cm.state != StateFollower {
 			cm.becomeFollower(args.Term)
 		}
-		reply.Success = true
-		cm.electionResetEvent = time.Now()
+
+		/*
+			TODO: 3 - find which entries to applies to the log.
+				if args.PrevLogIndex = -1 ||
+					(args.PrevLogIndex < len(cm.log) && args.PrevLogTerm =-= cm.log[argv.PrevLogIndex].Term ){
+					reply success = true
+					logInsertIndex := argsPrevLogIndex + 1
+					newEntriesIndex := 0
+
+					find an insertion point - where there's a term mismatch between the existing log starting at
+					PrevLogIndex+1 and the new entries sent in the RPC.
+					start from args.PrevLogIndex +1 and newEntriesIndex =0 -> len(cm.log) || newEntriesIndex >= len(arg.entries)
+					if current log term != log term from args -> break
+					increment starting index and ending index
+
+					append to cm log entries from args
+
+					if leaderCommit > commitIndex -> commit index = min(leaderCommit, index of last new entry)
+				}
+		*/
+
+		// START: find which entries to apply to the log.
+		// if the follower does not find an entry in its log with same index and the same term
+		// 	-> refuses the new entries.
+		if args.PrevLogIndex == -1 ||
+			(args.PrevLogIndex < len(cm.logs) && args.PrevLogTerm == cm.logs[args.PrevLogIndex].Term) {
+			reply.Success = true
+			cm.electionResetEvent = time.Now()
+
+			// logInsertIndex should point at the end of follower logs or at the term mismatch with leader entry.
+			logInsertIndex := args.PrevLogIndex + 1
+			// newEntriesIndex should point at the start of
+			newEntriesIndex := 0
+			for {
+				if args.PrevLogIndex > len(cm.logs) || newEntriesIndex >= len(args.Entries) {
+					break
+				}
+
+				// compare term between current log index with new entries term.
+				if cm.logs[logInsertIndex].Term != args.Entries[newEntriesIndex].Term {
+					break
+				}
+				logInsertIndex++
+				newEntriesIndex++
+			}
+
+			if newEntriesIndex < len(args.Entries) {
+
+			}
+
+			// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+			if args.LeaderCommit > cm.commitIndex {
+				if args.LeaderCommit > len(cm.logs)-1 {
+					cm.commitIndex = len(cm.logs) - 1
+				} else {
+					cm.commitIndex = args.LeaderCommit
+				}
+			}
+		}
+		// END: find which entries to apply to the log.
 	}
 
 	reply.Term = cm.currentTerm
 	cm.dlog("AppendEntries reply: %+v", *reply)
 
 	return nil
+}
+
+// Submit appends command into the log with current term.
+func (cm *ConsensusModule) Submit(command interface{}) bool {
+	return false
 }
 
 func (cm *ConsensusModule) runElectionTimer() {
@@ -185,18 +325,25 @@ Becoming a candidate
 2. Send RV RPC to all peers, asking them to vote for us in this election.
 3. Wait for replies to these RPCs and count if we got enough votes to become a leader.
 */
-
 func (cm *ConsensusModule) startElection() {
 	cm.state = StateCandidate
 	cm.currentTerm++
 	savedCurrentTerm := cm.currentTerm
 	cm.electionResetEvent = time.Now()
 	cm.votedFor = cm.id
-	cm.dlog("becomes Candidate (currentTerm=%d); log=%v", savedCurrentTerm, cm.logs)
+	cm.dlog(
+		"becomes Candidate (currentTerm=%d); log=%v",
+		savedCurrentTerm,
+		cm.logs)
 
 	votesReceived := 1
 	for _, peerId := range cm.peerIds {
 		go func(peerId int) {
+			/*
+				TODO:
+				lock to get last log index and last log term
+				for sending to requestVote RPC
+			*/
 			args := RequestVoteArgs{
 				Term:        savedCurrentTerm,
 				CandidateId: cm.id,
@@ -204,7 +351,11 @@ func (cm *ConsensusModule) startElection() {
 
 			reply := &RequestVoteReply{}
 
-			err := cm.server.Call(peerId, "ConsensusModule.RequestVote", args, reply)
+			err := cm.server.Call(
+				peerId,
+				"ConsensusModule.RequestVote",
+				args,
+				reply)
 			if err != nil {
 				fmt.Println(err)
 				return
@@ -229,7 +380,10 @@ func (cm *ConsensusModule) startElection() {
 				if reply.VoteGranted {
 					votesReceived++
 					if 2*votesReceived+1 > len(cm.peerIds)+1 {
-						cm.dlog("wins election with %d votes", votesReceived)
+						cm.dlog(
+							"wins election with %d votes",
+							votesReceived,
+						)
 						cm.startLeader()
 						return
 					}
@@ -274,12 +428,30 @@ func (cm *ConsensusModule) leaderSendHeartBeats() {
 	savedTerm := cm.currentTerm
 	cm.mu.Unlock()
 
+	// START: Send heartbeats to peers.
 	for _, peerId := range cm.peerIds {
 		go func(peerId int) {
-			args := &AppendEntriesArgs{
-				Term:     savedTerm,
-				LeaderId: cm.id,
+			// START: Get AppendEntries RPC args.
+			cm.mu.Lock()
+			peerNextIndex := cm.nextIndex[peerId]
+			prevLogIndex := peerNextIndex - 1
+			prevLogTerm := -1
+			if prevLogIndex > 0 {
+				prevLogTerm = cm.logs[prevLogIndex].Term
 			}
+
+			entries := cm.logs[peerNextIndex:]
+			cm.mu.Unlock()
+
+			args := &AppendEntriesArgs{
+				Term:         savedTerm,
+				LeaderId:     cm.id,
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm:  prevLogTerm,
+				LeaderCommit: cm.commitIndex,
+				Entries:      entries,
+			}
+			// END: Get AppendEntries RPC args.
 			cm.dlog("sending AppendEntries to %v: ni=%d, args=%+v", peerId, 0, args)
 
 			reply := &AppendEntriesReply{}
@@ -287,13 +459,40 @@ func (cm *ConsensusModule) leaderSendHeartBeats() {
 			if err != nil {
 				return
 			}
+
 			if reply.Term > savedTerm {
 				cm.dlog("term out of date in heartbeat reply")
 				cm.becomeFollower(reply.Term)
 			}
+
+			// START: check if entry is ready to be replicated.
+			if savedTerm == reply.Term {
+				if reply.Success {
+					cm.nextIndex[peerId] = peerNextIndex + len(entries)
+					cm.matchIndex[peerId] = cm.nextIndex[peerId] - 1
+
+					savedCommitIndex := cm.commitIndex
+					matchCount := 0
+					for i := savedCommitIndex + 1; i < len(cm.logs); i++ {
+						if cm.matchIndex[peerId] > i {
+							matchCount++
+						}
+						if 2*matchCount+1 > len(cm.peerIds)+1 {
+							cm.commitIndex = i
+						}
+					}
+					if cm.commitIndex > savedCommitIndex {
+						cm.newCommitReadyChan <- struct{}{}
+					} else {
+						peerNextIndex--
+					}
+				}
+			}
+			// END: check if entry is ready to be replicated.
+
 		}(peerId)
 	}
-
+	// END: Send heartbeats to peers.
 }
 
 func (cm *ConsensusModule) becomeFollower(term int) {
@@ -328,4 +527,33 @@ func (cm *ConsensusModule) Report() (id int, term int, isLeader bool) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.id, cm.currentTerm, cm.state == StateLeader
+}
+
+// commitChanSender waits for signal from cm.newCommitReadyChan
+// then it will send entry to cm.commitChan.
+func (cm *ConsensusModule) commitChanSender() {
+	for range cm.newCommitReadyChan {
+		if cm.commitIndex > cm.lastApplied {
+			entries := cm.logs[cm.lastApplied+1 : cm.commitIndex+1]
+			for _, entry := range entries {
+				cm.commitChan <- CommitEntry{
+					Command: entry.Command,
+					Index:   entry.Index,
+					Term:    entry.Term,
+				}
+			}
+		}
+	}
+}
+
+// lastLogIndexAndTerm returns index of the last log entry and its term.
+// if the cm's logs is empty then return -1,-1
+func (cm *ConsensusModule) lastLogIndexAndTerm() (int, int) {
+	if len(cm.logs) < 0 {
+		return -1, -1
+	}
+
+	lastIndex := len(cm.logs) - 1
+
+	return lastIndex, cm.logs[lastIndex].Term
 }

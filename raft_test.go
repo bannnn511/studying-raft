@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log"
 	"testing"
 	"time"
 
@@ -80,12 +79,10 @@ func TestElectionLeaderDisconnectThenReconnect(t *testing.T) {
 
 	sleepMs(350)
 	newLeaderId, newTerm := h.CheckSingleLeader()
-	log.Println("newLeader", newLeaderId, newTerm)
 	h.ReconnectPeer(origLeaderId)
-	sleepMs(1000)
+	sleepMs(150)
 
 	againLeaderId, againTerm := h.CheckSingleLeader()
-	log.Println("againLeader", againLeaderId, againLeaderId)
 
 	if newLeaderId != againLeaderId {
 		t.Errorf("again leader id got %d; want %d", againLeaderId, newLeaderId)
