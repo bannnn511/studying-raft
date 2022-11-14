@@ -331,14 +331,15 @@ func (cm *ConsensusModule) startElection() {
 	votesReceived := 1
 	for _, peerId := range cm.peerIds {
 		go func(peerId int) {
-			/*
-				TODO:
-				lock to get last log index and last log term
-				for sending to requestVote RPC
-			*/
+			cm.mu.Lock()
+			lastLogIndex, lastTermIndex := cm.lastLogIndexAndTerm()
+			cm.mu.Unlock()
+
 			args := RequestVoteArgs{
-				Term:        savedCurrentTerm,
-				CandidateId: cm.id,
+				Term:         savedCurrentTerm,
+				CandidateId:  cm.id,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastTermIndex,
 			}
 
 			reply := &RequestVoteReply{}
