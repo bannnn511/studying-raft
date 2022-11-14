@@ -64,9 +64,9 @@ type ConsensusModule struct {
 
 	// Volatile state on leader.
 	// for each server, index of next log entry to send to that server.
-	nextIndex []int
+	nextIndex map[int]int
 	// for each server,index of the highest log entry known to be replicated on that server.
-	matchIndex []int
+	matchIndex map[int]int
 
 	state              CMState
 	electionResetEvent time.Time
@@ -83,19 +83,27 @@ type ConsensusModule struct {
 	logger *zap.Logger
 }
 
-// NewConsensusModule creates a CM with a serverId that contains this CM, a list of peer ids and a server.
-// ready channel to notify all CM that all peers are connected, and it is safe to start its state machine.
-func NewConsensusModule(serverId int, peerIds []int, server *Server, ready <-chan interface{}) *ConsensusModule {
+// NewConsensusModule creates a new CM with the given ID, list of peer IDs and
+// server. The ready channel signals the CM that all peers are connected and
+// it's safe to start its state machine. commitChan is going to be used by the
+// CM to send log entries that have been committed by the Raft cluster.
+func NewConsensusModule(id int, peerIds []int, server *Server, ready <-chan interface{}, commitChan chan<- CommitEntry) *ConsensusModule {
 	cm := new(ConsensusModule)
-	cm.id = serverId
-	cm.state = StateFollower
-	cm.votedFor = -1
+	cm.id = id
 	cm.peerIds = peerIds
 	cm.server = server
-	cm.logger = zap.NewExample()
+	cm.commitChan = commitChan
+	cm.newCommitReadyChan = make(chan struct{}, 16)
+	cm.state = StateFollower
+	cm.votedFor = -1
+	cm.commitIndex = -1
+	cm.lastApplied = -1
+	cm.nextIndex = make(map[int]int)
+	cm.matchIndex = make(map[int]int)
 
 	go func() {
-		// The CM is blocked until ready is signaled.
+		// The CM is dormant until ready is signaled; then, it starts a countdown
+		// for leader election.
 		<-ready
 		cm.mu.Lock()
 		cm.electionResetEvent = time.Now()
@@ -103,6 +111,7 @@ func NewConsensusModule(serverId int, peerIds []int, server *Server, ready <-cha
 		cm.runElectionTimer()
 	}()
 
+	go cm.commitChanSender()
 	return cm
 }
 
@@ -135,7 +144,7 @@ func (cm *ConsensusModule) RequestVote(args RequestVoteArgs, reply *RequestVoteR
 	if cm.state == StateDead {
 		return nil
 	}
-	// TODO: get last log index and term
+	lastLogIndex, lastLogTerm := cm.lastLogIndexAndTerm()
 	cm.dlog("RequestVote: %+v [currentTerm=%d, votedFor=%d]", args, cm.currentTerm, cm.votedFor)
 
 	if args.Term > cm.currentTerm {
@@ -144,7 +153,10 @@ func (cm *ConsensusModule) RequestVote(args RequestVoteArgs, reply *RequestVoteR
 	}
 
 	// check that request lastLogIndex and lastLogTerm must be higher than cm's last log index and term
-	if args.Term == cm.currentTerm && (cm.votedFor == -1 || cm.votedFor == args.CandidateId) {
+	if args.Term == cm.currentTerm &&
+		(cm.votedFor == -1 || cm.votedFor == args.CandidateId) &&
+		(args.LastLogTerm > lastLogTerm ||
+			(args.LastLogTerm == lastLogIndex && args.LastLogIndex > lastLogIndex)) {
 		reply.VoteGranted = true
 		cm.votedFor = args.CandidateId
 		cm.electionResetEvent = time.Now()
@@ -207,26 +219,6 @@ func (cm *ConsensusModule) AppendEntries(args AppendEntriesArgs, reply *AppendEn
 			cm.becomeFollower(args.Term)
 		}
 
-		/*
-			TODO: 3 - find which entries to applies to the log.
-				if args.PrevLogIndex = -1 ||
-					(args.PrevLogIndex < len(cm.log) && args.PrevLogTerm =-= cm.log[argv.PrevLogIndex].Term ){
-					reply success = true
-					logInsertIndex := argsPrevLogIndex + 1
-					newEntriesIndex := 0
-
-					find an insertion point - where there's a term mismatch between the existing log starting at
-					PrevLogIndex+1 and the new entries sent in the RPC.
-					start from args.PrevLogIndex +1 and newEntriesIndex =0 -> len(cm.log) || newEntriesIndex >= len(arg.entries)
-					if current log term != log term from args -> break
-					increment starting index and ending index
-
-					append to cm log entries from args
-
-					if leaderCommit > commitIndex -> commit index = min(leaderCommit, index of last new entry)
-				}
-		*/
-
 		// START: find which entries to apply to the log.
 		// if the follower does not find an entry in its log with same index and the same term
 		// 	-> refuses the new entries.
@@ -253,7 +245,7 @@ func (cm *ConsensusModule) AppendEntries(args AppendEntriesArgs, reply *AppendEn
 			}
 
 			if newEntriesIndex < len(args.Entries) {
-
+				cm.logs = append(cm.logs[:logInsertIndex], args.Entries[newEntriesIndex:]...)
 			}
 
 			// If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
@@ -549,7 +541,7 @@ func (cm *ConsensusModule) commitChanSender() {
 // lastLogIndexAndTerm returns index of the last log entry and its term.
 // if the cm's logs is empty then return -1,-1
 func (cm *ConsensusModule) lastLogIndexAndTerm() (int, int) {
-	if len(cm.logs) < 0 {
+	if len(cm.logs) <= 0 {
 		return -1, -1
 	}
 
