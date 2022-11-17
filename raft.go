@@ -10,6 +10,12 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	keyCurrentTerm  = []byte("CurrentTerm")
+	keyLastVoteTerm = []byte("LastVoteTerm")
+	keyLastVoteCand = []byte("LastVoteCand")
+)
+
 type CMState int
 
 // CommitEntry is the data reported by raft to the commit channel.
@@ -62,6 +68,10 @@ type Raft struct {
 
 	// server is the server contains this CM to issues RPC calls to peers.
 	server *Server
+
+	// stable is a StableStore implementation for durable state
+	// It provides stable storage for many fields in raftState
+	stable StableStore
 
 	votedFor int
 
@@ -169,32 +179,31 @@ func (r *Raft) electSelf() <-chan voteResult {
 	}
 
 	askPeer := func(peerId int) {
-
-		reply := RequestVoteReply{}
-		err := r.trans.RequestVote(requestVote, &reply)
+		reply := voteResult{voterID: peerId}
+		err := r.trans.RequestVote(requestVote, &reply.RequestVoteReply)
 		if err != nil {
 			reply.Term = r.getCurrentTerm()
 			reply.VoteGranted = false
 		}
 
-		voteResult := voteResult{
-			RequestVoteReply: reply,
-			voterID:          peerId,
-		}
-		respCh <- voteResult
+		respCh <- reply
 	}
 
 	for _, peerId := range r.peerIds {
 		if peerId == r.id {
-			r.slog("vote for itself", "candidateId", peerId)
-			voteResult := voteResult{
+			r.slog("vote for itself", "candidateId", r.id)
+			if err := r.persistVote(r.getCurrentTerm(), []byte(fmt.Sprintf("%v", peerId))); err != nil {
+				r.dlog("failed to persist vote")
+				return nil
+			}
+
+			respCh <- voteResult{
 				RequestVoteReply: RequestVoteReply{
 					Term:        r.getCurrentTerm(),
 					VoteGranted: true,
 				},
-				voterID: peerId,
+				voterID: r.id,
 			}
-			respCh <- voteResult
 		} else {
 			r.slog("sending RequestVote", "peerId", peerId)
 			askPeer(peerId)
@@ -240,11 +249,24 @@ func (r *Raft) runCandidate() {
 
 // END: CANDIDATE
 
-func (r *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error {
-	if args.Term > r.currentTerm {
-		r.setCurrentTerm(args.Term)
+func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) {
+	resp = &RequestVoteReply{
+		Term:        r.getCurrentTerm(),
+		VoteGranted: false,
+	}
+
+	// Ignore an older term
+	if req.Term < r.getCurrentTerm() {
+		return
+	}
+
+	if req.Term > r.getCurrentTerm() {
+		r.slog("lost leadership because received a RequestVote with a newer term",
+			"currentTerm", r.getCurrentTerm(),
+			"candidateTerm", req.Term)
+		r.setCurrentTerm(req.Term)
 		r.setState(Follower)
-		r.votedFor = -1
+		resp.Term = req.Term
 	}
 
 	var lastTerm uint64 = 0
@@ -252,14 +274,22 @@ func (r *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error 
 	if logLength > 0 {
 		lastTerm = r.log[logLength-1].Term
 	}
-	logOke := (args.LastLogTerm > lastTerm) ||
-		(args.LastLogTerm == lastTerm && args.LastLogIndex >= logLength)
+	logOke := (req.LastLogTerm > lastTerm) ||
+		(req.LastLogTerm == lastTerm && req.LastLogIndex >= logLength)
 
-	if args.Term == r.getCurrentTerm() && logOke && r.votedFor == -1 {
-		reply.VoteGranted = true
-	} else {
-		reply.Term = r.getCurrentTerm()
-		reply.VoteGranted = false
+	if req.Term == r.getCurrentTerm() && logOke && r.votedFor == -1 {
+		resp.VoteGranted = true
+		return
+	}
+}
+
+func (r *Raft) persistVote(term uint64, candidate []byte) error {
+	if err := r.stable.SetUint64(keyCurrentTerm, term); err != nil {
+		return err
+	}
+
+	if err := r.stable.Set(keyLastVoteCand, candidate); err != nil {
+		return err
 	}
 
 	return nil
