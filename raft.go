@@ -224,18 +224,28 @@ func (r *Raft) runCandidate() {
 	votesNeeded := r.quorumSize()
 
 	// Candidate elect for itself
-	voteResult := r.electSelf()
+	voteResultCh := r.electSelf()
 
 	for r.getState() == Candidate {
 		select {
-		case result := <-voteResult:
-			if result.Term == r.getCurrentTerm() && result.VoteGranted {
+		case result := <-voteResultCh:
+			// Check if term is higher than ours.
+			if result.Term > r.getCurrentTerm() {
+				r.slog("newer term discovered, fallback to Follower", "term", result.Term)
+				r.setCurrentTerm(result.Term)
+				r.setState(Follower)
+			}
+
+			// Check if vote is granted.
+			if result.VoteGranted {
 				grantedVotes++
+				r.slog("vote is granted", "from", result.voterID, "term", result.Term)
 			}
 
 			if grantedVotes >= votesNeeded {
 				r.setState(Leader)
 				r.setLeader(r.id)
+				r.slog("election won", "votes", grantedVotes, "term", result.Term)
 				return
 			}
 		case <-electionTimeoutTimer:
