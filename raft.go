@@ -20,10 +20,10 @@ type CommitEntry struct {
 	Command interface{}
 
 	// Index is the log index at which the client command is committed.
-	Index int
+	Index uint64
 
 	// Term is the Raft term at which the client command is committed
-	Term int
+	Term uint64
 }
 
 const DebugCM = 1
@@ -31,6 +31,9 @@ const DebugCM = 1
 // Raft implements a single node of Raft consensus.
 type Raft struct {
 	raftState
+
+	// id is the Server ID of this CM.
+	id int
 
 	// Transport protocol.
 	trans Transport
@@ -160,7 +163,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 	lastLogIndex, lastLogTerm := r.getLastEntry()
 	requestVote := RequestVoteArgs{
 		Term:         r.getCurrentTerm(),
-		CandidateId:  r.config().id,
+		CandidateId:  r.id,
 		LastLogIndex: lastLogIndex,
 		LastLogTerm:  lastLogTerm,
 	}
@@ -182,7 +185,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 	}
 
 	for _, peerId := range r.peerIds {
-		if peerId == r.config().id {
+		if peerId == r.id {
 			r.slog("vote for itself", "candidateId", peerId)
 			voteResult := voteResult{
 				RequestVoteReply: RequestVoteReply{
@@ -208,25 +211,64 @@ func (r *Raft) runCandidate() {
 	electionTimeout := r.config().ElectionTimeout
 	electionTimeoutTimer := randomTimeout(electionTimeout)
 
+	grantedVotes := 0
+	votesNeeded := r.quorumSize()
+
+	// Candidate elect for itself
 	voteResult := r.electSelf()
+
 	for r.getState() == Candidate {
 		select {
-		case <-voteResult:
+		case result := <-voteResult:
+			if result.Term == r.getCurrentTerm() && result.VoteGranted {
+				grantedVotes++
+			}
+
+			if grantedVotes >= votesNeeded {
+				r.setState(Leader)
+				r.setLeader(r.id)
+				return
+			}
 		case <-electionTimeoutTimer:
+			r.dlog("Election timeout reached, restarting election")
 			return
 		case <-r.shutDownCh:
 			return
 		}
 	}
-
 }
 
 // END: CANDIDATE
 
+func (r *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error {
+	if args.Term > r.currentTerm {
+		r.setCurrentTerm(args.Term)
+		r.setState(Follower)
+		r.votedFor = -1
+	}
+
+	var lastTerm uint64 = 0
+	var logLength = uint64(len(r.log))
+	if logLength > 0 {
+		lastTerm = r.log[logLength-1].Term
+	}
+	logOke := (args.LastLogTerm > lastTerm) ||
+		(args.LastLogTerm == lastTerm && args.LastLogIndex >= logLength)
+
+	if args.Term == r.getCurrentTerm() && logOke && r.votedFor == -1 {
+		reply.VoteGranted = true
+	} else {
+		reply.Term = r.getCurrentTerm()
+		reply.VoteGranted = false
+	}
+
+	return nil
+}
+
 // dlog logs a debugging message is DebugCM > 0.
 func (r *Raft) dlog(format string, args ...interface{}) {
 	if DebugCM > 0 {
-		format = fmt.Sprintf("[%d] ", r.config().id) + format
+		format = fmt.Sprintf("[%d] ", r.id) + format
 		log.Printf(format, args...)
 	}
 }
@@ -234,7 +276,7 @@ func (r *Raft) dlog(format string, args ...interface{}) {
 // slog logs a debugging message is DebugCM > 0.
 func (r *Raft) slog(format string, args ...interface{}) {
 	if DebugCM > 0 {
-		format = fmt.Sprintf("[%d] ", r.config().id) + format
+		format = fmt.Sprintf("[%d] ", r.id) + format
 		r.logger.Infow(format, args...)
 	}
 }
