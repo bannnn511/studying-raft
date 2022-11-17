@@ -5,7 +5,7 @@ type RequestVoteArgs struct {
 	Term uint64
 
 	// CandidateId is candidate requesting vote.
-	CandidateId int
+	CandidateId string
 
 	// LastLogIndex is index of last log index.
 	LastLogIndex uint64

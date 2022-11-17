@@ -39,7 +39,7 @@ type Raft struct {
 	raftState
 
 	// id is the Server ID of this CM.
-	id int
+	id string
 
 	// Transport protocol.
 	trans Transport
@@ -64,7 +64,7 @@ type Raft struct {
 	newCommitReadyChan chan struct{}
 
 	// peerIds is ID list of all servers in the cluster.
-	peerIds []int
+	peerIds []string
 
 	// server is the server contains this CM to issues RPC calls to peers.
 	server *Server
@@ -80,12 +80,12 @@ type Raft struct {
 	shutDownCh chan struct{}
 
 	leaderLock sync.RWMutex
-	leaderId   int
+	leaderId   string
 
 	logger *zap.SugaredLogger
 }
 
-func NewRaft(config *Config, peerIds []int, server *Server) *Raft {
+func NewRaft(config *Config, peerIds []string, server *Server) *Raft {
 	logger, _ := zap.NewProduction()
 
 	cm := new(Raft)
@@ -139,7 +139,7 @@ func (r *Raft) runFollower() {
 			}
 
 			// heartbeat failed, transition to Candidate state.
-			r.setLeader(-1)
+			r.setLeader("")
 			r.setState(Candidate)
 		case <-r.shutDownCh:
 			return
@@ -148,7 +148,7 @@ func (r *Raft) runFollower() {
 }
 
 // START: LEADER
-func (r *Raft) setLeader(id int) {
+func (r *Raft) setLeader(id string) {
 	r.leaderLock.Lock()
 	r.leaderId = id
 	r.leaderLock.Unlock()
@@ -163,7 +163,7 @@ func (r *Raft) runLeader() {
 // START: CANDIDATE
 type voteResult struct {
 	RequestVoteReply
-	voterID int
+	voterID string
 }
 
 func (r *Raft) electSelf() <-chan voteResult {
@@ -178,7 +178,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 		LastLogTerm:  lastLogTerm,
 	}
 
-	askPeer := func(peerId int) {
+	askPeer := func(peerId string) {
 		reply := voteResult{voterID: peerId}
 		err := r.trans.RequestVote(requestVote, &reply.RequestVoteReply)
 		if err != nil {
@@ -269,18 +269,54 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) {
 		resp.Term = req.Term
 	}
 
-	var lastTerm uint64 = 0
-	var logLength = uint64(len(r.log))
-	if logLength > 0 {
-		lastTerm = r.log[logLength-1].Term
-	}
-	logOke := (req.LastLogTerm > lastTerm) ||
-		(req.LastLogTerm == lastTerm && req.LastLogIndex >= logLength)
-
-	if req.Term == r.getCurrentTerm() && logOke && r.votedFor == -1 {
-		resp.VoteGranted = true
+	// Check if we have voted yet.
+	lastVoteTerm, err := r.stable.GetUint64(keyLastVoteTerm)
+	if err != nil && err.Error() != "not found" {
+		r.slog("failed to get last vote term", "error", err)
 		return
 	}
+
+	lastVoteCandidate, err := r.stable.Get(keyLastVoteCand)
+	if err != nil && err.Error() != "not found" {
+		r.slog("failed to get last vote candidate", "error", err)
+		return
+	}
+	if lastVoteTerm == req.Term && lastVoteCandidate != nil {
+		r.slog("duplicate requestVote for same term", "term", req.Term)
+		if string(lastVoteCandidate) == req.CandidateId {
+			r.slog("duplicate requestVote from", "candidate", req.CandidateId)
+		}
+		return
+	}
+
+	lastLogIdx, lastTerm := r.getLastEntry()
+	// reject if their term is older.
+	if lastTerm > req.LastLogTerm {
+		r.slog("rejecting vote request since our last log term is greater",
+			"candidate", req.CandidateId,
+			"last-term", lastTerm,
+			"last-candidate-term", req.LastLogTerm)
+		return
+	}
+
+	if lastTerm == req.LastLogTerm && lastLogIdx > req.LastLogIndex {
+		r.slog("rejecting vote request since our last log index is greater",
+			"candidate", req.CandidateId,
+			"last-index", lastLogIdx,
+			"last-candidate-index", req.LastLogIndex)
+		return
+	}
+
+	// Persist vote for safety
+	if err := r.persistVote(req.Term, []byte(req.CandidateId)); err != nil {
+		r.slog("failed to persist vote", "error", err)
+		return
+	}
+
+	resp.VoteGranted = true
+	r.setLastContact()
+
+	return
 }
 
 func (r *Raft) persistVote(term uint64, candidate []byte) error {
@@ -313,6 +349,12 @@ func (r *Raft) slog(format string, args ...interface{}) {
 
 func (r *Raft) config() Config {
 	return r.conf.Load().(Config)
+}
+
+func (r *Raft) setLastContact() {
+	r.lastContactLock.RLock()
+	r.lastContact = time.Now()
+	r.lastContactLock.RUnlock()
 }
 
 func (r *Raft) LastContact() time.Time {
