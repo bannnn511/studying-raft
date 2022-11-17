@@ -1,0 +1,81 @@
+package studying_raft
+
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"go.uber.org/zap"
+)
+
+// Raft implements a single node of Raft consensus.
+type Raft struct {
+	raftState
+
+	// id is the Server ID of this CM.
+	id string
+
+	// Transport protocol.
+	trans Transport
+
+	// lastContact is the last time that we have contact with
+	// leader node.
+	lastContact     time.Time
+	lastContactLock sync.RWMutex
+
+	// conf stores the current configuration to use. This is the most recent one
+	// provided. All reads of config values should use the config() helper method
+	// to read this safely.
+	conf atomic.Value
+
+	// commitChan is the channel where this CM is going to report committed log
+	// entries. It's passed in by the client during construction.
+	commitChan chan<- CommitEntry
+
+	// newCommitReadyChan is an internal notification channel used by goroutines
+	// that commit new entries to the log to notify that these entries may be sent
+	// on commitChan.
+	newCommitReadyChan chan struct{}
+
+	// peerIds is ID list of all servers in the cluster.
+	peerIds []string
+
+	// server is the server contains this CM to issues RPC calls to peers.
+	server *Server
+
+	// stable is a StableStore implementation for durable state
+	// It provides stable storage for many fields in raftState
+	stable StableStore
+
+	log []CommitEntry
+
+	shutDownCh chan struct{}
+
+	leaderLock sync.RWMutex
+	leaderId   string
+	// leaderState used only while state is leader
+	leaderState leaderState
+
+	logger *zap.SugaredLogger
+}
+
+func NewRaft(config *Config, peerIds []string, server *Server) *Raft {
+	logger, _ := zap.NewProduction()
+
+	cm := new(Raft)
+
+	cm.logger = logger.Sugar()
+	// Initialize as Follower
+	cm.setState(Follower)
+	cm.peerIds = peerIds
+	cm.conf.Store(config)
+
+	cm.goFunc(cm.run)
+
+	return cm
+}
+
+type leaderState struct {
+	commitCh chan struct{}
+	stepDown chan struct{}
+}
