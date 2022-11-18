@@ -30,13 +30,6 @@ type CommitEntry struct {
 
 const DebugCM = 1
 
-func (r *Raft) DefaultConfiguration() *Config {
-	return &Config{
-		HeartbeatTimeout: 1000 * time.Millisecond,
-		ElectionTimeout:  1000 * time.Millisecond,
-	}
-}
-
 func (r *Raft) run() {
 	for {
 		select {
@@ -46,6 +39,7 @@ func (r *Raft) run() {
 		default:
 		}
 
+		r.slog("running")
 		switch r.getState() {
 		case Follower:
 			r.runFollower()
@@ -66,12 +60,14 @@ func (r *Raft) runFollower() {
 	for r.getState() == Follower {
 		select {
 		case <-heartbeatTimer:
-			lastContact := r.LastContact()
+			r.slog("------------heartbeat")
+			// reset heartbeat timer
 			hbTimeout := r.config().HeartbeatTimeout
-			currentTime := time.Now()
+			heartbeatTimer = randomTimeout(hbTimeout)
 
 			// check if we still have contact
-			if currentTime.Sub(lastContact) <= hbTimeout {
+			lastContact := r.LastContact()
+			if time.Now().Sub(lastContact) <= hbTimeout {
 				continue
 			}
 
@@ -263,6 +259,7 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 		r.setCurrentTerm(req.Term)
 		r.setState(Follower)
 		resp.Term = req.Term
+		r.slog("become follower", "term", req.Term)
 	}
 
 	// Check if we have voted yet.

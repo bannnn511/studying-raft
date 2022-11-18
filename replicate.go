@@ -3,7 +3,10 @@ package studying_raft
 // replicate trying to replicate log entries to a single Follower.
 func (r *Raft) replicate(peerId string) {
 	stopCh := make(chan struct{}, 1)
-	defer close(stopCh)
+	defer func() {
+		close(stopCh)
+		r.slog("leader stop replicate")
+	}()
 	r.heartBeat(peerId, stopCh)
 }
 

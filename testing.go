@@ -132,3 +132,7 @@ func tlog(format string, a ...interface{}) {
 	format = "[TEST] " + format
 	log.Printf(format, a...)
 }
+
+func sleepMs(n int) {
+	time.Sleep(time.Duration(n) * time.Millisecond)
+}

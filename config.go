@@ -11,3 +11,10 @@ type Config struct {
 	// from a leader before we attempt an election.
 	ElectionTimeout time.Duration
 }
+
+func (r *Raft) DefaultConfiguration() *Config {
+	return &Config{
+		HeartbeatTimeout: 50 * time.Millisecond,
+		ElectionTimeout:  50 * time.Millisecond,
+	}
+}
