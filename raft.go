@@ -238,7 +238,7 @@ func (r *Raft) leaderLoop() {
 
 // START: RPC
 
-func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) {
+func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 	resp = &RequestVoteReply{
 		Term:        r.getCurrentTerm(),
 		VoteGranted: false,
@@ -246,7 +246,7 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) {
 
 	// Ignore an older term
 	if req.Term < r.getCurrentTerm() {
-		return
+		return nil
 	}
 
 	if req.Term > r.getCurrentTerm() {
@@ -262,20 +262,20 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) {
 	lastVoteTerm, err := r.stable.GetUint64(keyLastVoteTerm)
 	if err != nil && err.Error() != "not found" {
 		r.slog("failed to get last vote term", "error", err)
-		return
+		return nil
 	}
 
 	lastVoteCandidate, err := r.stable.Get(keyLastVoteCand)
 	if err != nil && err.Error() != "not found" {
 		r.slog("failed to get last vote candidate", "error", err)
-		return
+		return nil
 	}
 	if lastVoteTerm == req.Term && lastVoteCandidate != nil {
 		r.slog("duplicate requestVote for same term", "term", req.Term)
 		if string(lastVoteCandidate) == req.CandidateId {
 			r.slog("duplicate requestVote from", "candidate", req.CandidateId)
 		}
-		return
+		return nil
 	}
 
 	lastLogIdx, lastTerm := r.getLastEntry()
@@ -285,7 +285,7 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) {
 			"candidate", req.CandidateId,
 			"last-term", lastTerm,
 			"last-candidate-term", req.LastLogTerm)
-		return
+		return nil
 	}
 
 	if lastTerm == req.LastLogTerm && lastLogIdx > req.LastLogIndex {
@@ -293,19 +293,19 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) {
 			"candidate", req.CandidateId,
 			"last-index", lastLogIdx,
 			"last-candidate-index", req.LastLogIndex)
-		return
+		return nil
 	}
 
 	// Persist vote for safety
 	if err := r.persistVote(req.Term, []byte(req.CandidateId)); err != nil {
 		r.slog("failed to persist vote", "error", err)
-		return
+		return nil
 	}
 
 	resp.VoteGranted = true
 	r.setLastContact()
 
-	return
+	return nil
 }
 
 func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) error {
