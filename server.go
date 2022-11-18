@@ -65,7 +65,7 @@ func (s *Server) Serve() {
 
 	s.rpcServer = rpc.NewServer()
 
-	s.raft = NewRaft(s.raft.DefaultConfiguration(), s.peerIds, s, nil)
+	s.raft = NewRaft(s.raft.DefaultConfiguration(), s.peerIds, s, NewMapStorage())
 	s.rpcProxy = &RpcProxy{raft: s.raft}
 	err := s.rpcServer.RegisterName("Raft", s.rpcProxy)
 	if err != nil {
