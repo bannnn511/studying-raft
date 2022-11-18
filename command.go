@@ -27,7 +27,7 @@ type AppendEntriesArgs struct {
 	Term uint64
 
 	// LeaderId for follower to redirect client.
-	LeaderId int
+	LeaderId string
 
 	// PrevLogIndex is index of log entry immediately preceding the new ones in its log.
 	PrevLogIndex uint64

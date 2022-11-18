@@ -97,7 +97,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 
 	askPeer := func(peerId string) {
 		reply := voteResult{voterID: peerId}
-		err := r.trans.RequestVote(requestVote, &reply.RequestVoteReply)
+		err := r.trans.RequestVote(peerId, requestVote, &reply.RequestVoteReply)
 		if err != nil {
 			reply.Term = r.getCurrentTerm()
 			reply.VoteGranted = false
@@ -152,6 +152,7 @@ func (r *Raft) runCandidate() {
 				r.slog("newer term discovered, fallback to Follower", "term", result.Term)
 				r.setCurrentTerm(result.Term)
 				r.setState(Follower)
+				return
 			}
 
 			// Check if vote is granted.
@@ -189,7 +190,16 @@ func (r *Raft) setupLeaderState() {
 	r.leaderState.stepDown = make(chan struct{}, 1)
 }
 
-// runLeader runs the main loop while in the Leader state.
+// startStopReplication called on the leader whenever there is a message in the log
+// and periodically send heartbeat to followers.
+func (r *Raft) startStopReplication() {
+	for _, peerId := range r.peerIds {
+		r.goFunc(func() { r.replicate(peerId) })
+	}
+}
+
+// runLeaders setup leader state, teardown and start replicating
+// then stay in the main leader loop.
 func (r *Raft) runLeader() {
 	r.slog("entering leader state", "leader", r)
 
@@ -197,14 +207,15 @@ func (r *Raft) runLeader() {
 
 	defer func() {
 		r.setLeader("")
-
+		r.setLastContact()
 		// TODO: stop replication
-
 		// nil vs closed channel ?
 		r.leaderState.commitCh = nil
 		r.leaderState.stepDown = nil
 
 	}()
+
+	r.startStopReplication()
 
 	r.leaderLoop()
 }
@@ -295,6 +306,33 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) {
 	r.setLastContact()
 
 	return
+}
+
+func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) error {
+	reply = &AppendEntriesReply{
+		Term:    r.getCurrentTerm(),
+		Success: false,
+	}
+
+	// ignore older term.
+	if req.Term < r.getCurrentTerm() {
+		return nil
+	}
+
+	if req.Term > r.getCurrentTerm() || r.getState() != Follower {
+		r.setState(Follower)
+		r.setCurrentTerm(req.Term)
+	}
+
+	r.setLeader(req.LeaderId)
+	// TODO: verify last log entry
+	// TODO: process new entry
+	// TODO: update the commit index
+
+	reply.Success = true
+	r.setLastContact()
+
+	return nil
 }
 
 // END: RPC

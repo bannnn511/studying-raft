@@ -34,3 +34,7 @@ func TestRaft_slog(t *testing.T) {
 		})
 	}
 }
+
+func TestRaft_random(t *testing.T) {
+
+}
