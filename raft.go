@@ -109,7 +109,6 @@ func (r *Raft) electSelf() <-chan voteResult {
 			reply.Term = r.getCurrentTerm()
 			reply.VoteGranted = false
 		}
-		fmt.Println("reply here here her", reply)
 
 		respCh <- reply
 	}
@@ -209,7 +208,7 @@ func (r *Raft) startStopReplication() {
 // runLeaders setup leader state, teardown and start replicating
 // then stay in the main leader loop.
 func (r *Raft) runLeader() {
-	r.slog("entering leader state", "leader", r)
+	r.slog("entering leader state", "leader", r.id)
 
 	r.setupLeaderState()
 
@@ -249,10 +248,8 @@ func (r *Raft) leaderLoop() {
 // START: RPC
 
 func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
-	resp = &RequestVoteReply{
-		Term:        r.getCurrentTerm(),
-		VoteGranted: false,
-	}
+	resp.Term = r.getCurrentTerm()
+	resp.VoteGranted = false
 
 	// Ignore an older term
 	if req.Term < r.getCurrentTerm() {
@@ -260,7 +257,7 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 	}
 
 	if req.Term > r.getCurrentTerm() {
-		r.slog("lost leadership because received a RequestVote with a newer term",
+		r.slog("term out of date in RequestVote",
 			"currentTerm", r.getCurrentTerm(),
 			"candidateTerm", req.Term)
 		r.setCurrentTerm(req.Term)
@@ -314,16 +311,13 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 
 	resp.VoteGranted = true
 	r.setLastContact()
-	fmt.Println(resp)
 
 	return nil
 }
 
 func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) error {
-	reply = &AppendEntriesReply{
-		Term:    r.getCurrentTerm(),
-		Success: false,
-	}
+	reply.Term = r.getCurrentTerm()
+	reply.Success = false
 
 	// ignore older term.
 	if req.Term < r.getCurrentTerm() {

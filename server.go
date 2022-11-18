@@ -147,9 +147,9 @@ func (s *Server) Call(id string, serviceMethod string, args interface{}, reply i
 	s.mu.Unlock()
 
 	if peer == nil {
-		fmt.Errorf("call client %s after it closed", id)
+		return fmt.Errorf("call client %s after it closed", id)
 	} else {
-		peer.Call(serviceMethod, args, reply)
+		return peer.Call(serviceMethod, args, reply)
 	}
 	return nil
 }
