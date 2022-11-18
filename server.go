@@ -14,7 +14,7 @@ import (
 type Server struct {
 	mu       sync.Mutex
 	serverId int
-	peerIds  []int
+	peerIds  []string
 
 	raft     *Raft
 	rpcProxy *RpcProxy
@@ -30,7 +30,25 @@ type Server struct {
 	wg      sync.WaitGroup
 }
 
-func NewServer(serverId int, peerIds []int, readyCh <-chan struct{}, commitCh chan<- CommitEntry) *Server {
+func (s *Server) AppendEntries(peerId string, args AppendEntriesArgs, reply *AppendEntriesReply) error {
+	err := s.rpcProxy.AppendEntries(args, reply)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Server) RequestVote(peerId string, args RequestVoteArgs, reply *RequestVoteReply) error {
+	err := s.rpcProxy.RequestVote(args, reply)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func NewServer(serverId int, peerIds []string, readyCh <-chan struct{}, commitCh chan<- CommitEntry) *Server {
 	s := new(Server)
 	s.serverId = serverId
 	s.peerIds = peerIds
@@ -46,6 +64,8 @@ func (s *Server) Serve() {
 	s.mu.Lock()
 
 	s.rpcServer = rpc.NewServer()
+
+	s.raft = NewRaft(s.raft.DefaultConfiguration(), s.peerIds, s, nil)
 	s.rpcProxy = &RpcProxy{raft: s.raft}
 	err := s.rpcServer.RegisterName("Raft", s.rpcProxy)
 	if err != nil {

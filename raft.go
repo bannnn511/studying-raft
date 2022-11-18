@@ -30,6 +30,13 @@ type CommitEntry struct {
 
 const DebugCM = 1
 
+func (r *Raft) DefaultConfiguration() *Config {
+	return &Config{
+		HeartbeatTimeout: 1000 * time.Millisecond,
+		ElectionTimeout:  1000 * time.Millisecond,
+	}
+}
+
 func (r *Raft) run() {
 	for {
 		select {
@@ -352,7 +359,7 @@ func (r *Raft) persistVote(term uint64, candidate []byte) error {
 // dlog logs a debugging message is DebugCM > 0.
 func (r *Raft) dlog(format string, args ...interface{}) {
 	if DebugCM > 0 {
-		format = fmt.Sprintf("[%d] ", r.id) + format
+		format = fmt.Sprintf("[%s] ", r.id) + format
 		log.Printf(format, args...)
 	}
 }
@@ -360,7 +367,7 @@ func (r *Raft) dlog(format string, args ...interface{}) {
 // slog logs a debugging message is DebugCM > 0.
 func (r *Raft) slog(format string, args ...interface{}) {
 	if DebugCM > 0 {
-		format = fmt.Sprintf("[%d] ", r.id) + format
+		format = fmt.Sprintf("[%s] ", r.id) + format
 		r.logger.Infow(format, args...)
 	}
 }
@@ -387,4 +394,9 @@ func (r *Raft) quorumSize() int {
 	voters := len(r.peerIds)
 
 	return voters/2 + 1
+}
+
+// Report reports the state of this CM.
+func (r *Raft) Report() (id string, term uint64, isLeader bool) {
+	return r.id, r.getCurrentTerm(), r.getState() == Leader
 }
