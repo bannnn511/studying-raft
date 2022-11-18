@@ -1,6 +1,5 @@
 package studying_raft
 
 type Transport interface {
-	AppendEntries(peerId string, args AppendEntriesArgs, reply *AppendEntriesReply) error
-	RequestVote(peerId string, args RequestVoteArgs, reply *RequestVoteReply) error
+	Call(id string, serviceMethod string, args interface{}, reply interface{}) error
 }

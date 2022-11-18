@@ -41,6 +41,7 @@ func (r *Raft) run() {
 	for {
 		select {
 		case <-r.shutDownCh:
+			r.setLeader("")
 			return
 		default:
 		}
@@ -65,7 +66,6 @@ func (r *Raft) runFollower() {
 	for r.getState() == Follower {
 		select {
 		case <-heartbeatTimer:
-
 			lastContact := r.LastContact()
 			hbTimeout := r.config().HeartbeatTimeout
 			currentTime := time.Now()
@@ -104,11 +104,12 @@ func (r *Raft) electSelf() <-chan voteResult {
 
 	askPeer := func(peerId string) {
 		reply := voteResult{voterID: peerId}
-		err := r.trans.RequestVote(peerId, requestVote, &reply.RequestVoteReply)
+		err := r.trans.Call(peerId, "Raft.RequestVote", requestVote, &reply.RequestVoteReply)
 		if err != nil {
 			reply.Term = r.getCurrentTerm()
 			reply.VoteGranted = false
 		}
+		fmt.Println("reply here here her", reply)
 
 		respCh <- reply
 	}
@@ -153,6 +154,8 @@ func (r *Raft) runCandidate() {
 
 	for r.getState() == Candidate {
 		select {
+		case <-r.shutDownCh:
+			return
 		case result := <-voteResultCh:
 			// Check if term is higher than ours.
 			if result.Term > r.getCurrentTerm() {
@@ -176,8 +179,6 @@ func (r *Raft) runCandidate() {
 			}
 		case <-electionTimeoutTimer:
 			r.dlog("Election timeout reached, restarting election")
-			return
-		case <-r.shutDownCh:
 			return
 		}
 	}
@@ -230,6 +231,8 @@ func (r *Raft) runLeader() {
 func (r *Raft) leaderLoop() {
 	for r.getState() == Leader {
 		select {
+		case <-r.shutDownCh:
+			return
 		// TODO: handle leaderState signal
 		case <-r.leaderState.commitCh:
 		case <-r.leaderState.stepDown:
@@ -267,13 +270,13 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 
 	// Check if we have voted yet.
 	lastVoteTerm, err := r.stable.GetUint64(keyLastVoteTerm)
-	if err != nil && err.Error() != "not found" {
+	if err != nil && err != ErrKeyNotFound {
 		r.slog("failed to get last vote term", "error", err)
 		return nil
 	}
 
 	lastVoteCandidate, err := r.stable.Get(keyLastVoteCand)
-	if err != nil && err.Error() != "not found" {
+	if err != nil && err != ErrKeyNotFound {
 		r.slog("failed to get last vote candidate", "error", err)
 		return nil
 	}
@@ -311,6 +314,7 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 
 	resp.VoteGranted = true
 	r.setLastContact()
+	fmt.Println(resp)
 
 	return nil
 }

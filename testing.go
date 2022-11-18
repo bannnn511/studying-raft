@@ -5,8 +5,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
-
-	"github.com/stretchr/testify/require"
+	"time"
 )
 
 type Cluster struct {
@@ -48,7 +47,7 @@ func NewCluster(t *testing.T, n int) *Cluster {
 	for i := 0; i < n; i++ {
 		for j := 0; j < n; j++ {
 			if i != j {
-				ns[i].ConnectToPeer(j, ns[j].GetListenAddr())
+				ns[i].ConnectToPeer(strconv.Itoa(j), ns[j].GetListenAddr())
 			}
 		}
 		connected[i] = true
@@ -81,7 +80,7 @@ func (h *Cluster) DisconnectPeer(id int) {
 	h.cluster[id].DisconnectAll()
 	for j := 0; j < h.n; j++ {
 		if j != id {
-			h.cluster[j].DisconnectPeer(id)
+			h.cluster[j].DisconnectPeer(strconv.Itoa(id))
 		}
 	}
 	h.connected[id] = false
@@ -91,10 +90,10 @@ func (h *Cluster) ReconnectPeer(id int) {
 	tlog("Reconnect %d", id)
 	for j := 0; j < h.n; j++ {
 		if j != id {
-			if err := h.cluster[id].ConnectToPeer(j, h.cluster[j].GetListenAddr()); err != nil {
+			if err := h.cluster[id].ConnectToPeer(strconv.Itoa(j), h.cluster[j].GetListenAddr()); err != nil {
 				h.t.Fatal(err)
 			}
-			if err := h.cluster[j].ConnectToPeer(id, h.cluster[id].GetListenAddr()); err != nil {
+			if err := h.cluster[j].ConnectToPeer(strconv.Itoa(id), h.cluster[id].GetListenAddr()); err != nil {
 				h.t.Fatal(err)
 			}
 		}
@@ -102,15 +101,31 @@ func (h *Cluster) ReconnectPeer(id int) {
 	h.connected[id] = true
 }
 
-func (h *Cluster) CheckSingleLeader() {
-	leaders := 0
-	for _, server := range h.cluster {
-		_, _, isLeader := server.raft.Report()
-		if isLeader {
-			leaders++
+func (h *Cluster) CheckSingleLeader() (int, int) {
+	for r := 0; r < 5; r++ {
+		leaderId := -1
+		leaderTerm := -1
+		for i := 0; i < h.n; i++ {
+			if h.connected[i] {
+				_, term, isLeader := h.cluster[i].raft.Report()
+				if isLeader {
+					if leaderId < 0 {
+						leaderId = i
+						leaderTerm = int(term)
+					} else {
+						h.t.Fatalf("both %d and %d think they're leaders", leaderId, i)
+					}
+				}
+			}
 		}
+		if leaderId >= 0 {
+			return leaderId, leaderTerm
+		}
+		time.Sleep(150 * time.Millisecond)
 	}
-	require.Equal(h.t, leaders, 0)
+
+	h.t.Fatalf("leader not found")
+	return -1, -1
 }
 
 func tlog(format string, a ...interface{}) {

@@ -59,11 +59,12 @@ type Raft struct {
 	logger *zap.SugaredLogger
 }
 
-func NewRaft(config *Config, peerIds []string, server *Server, store StableStore) *Raft {
+func NewRaft(id string, config *Config, peerIds []string, server *Server, store StableStore) *Raft {
 	logger, _ := zap.NewProduction()
 
 	r := new(Raft)
 
+	r.id = id
 	r.logger = logger.Sugar()
 	// Initialize as Follower
 	r.setState(Follower)
@@ -71,6 +72,7 @@ func NewRaft(config *Config, peerIds []string, server *Server, store StableStore
 	r.conf.Store(*config)
 	r.trans = server
 	r.stable = store
+	r.shutDownCh = make(chan struct{})
 
 	r.goFunc(r.run)
 
@@ -80,4 +82,8 @@ func NewRaft(config *Config, peerIds []string, server *Server, store StableStore
 type leaderState struct {
 	commitCh chan struct{}
 	stepDown chan struct{}
+}
+
+func (r *Raft) Shutdown() {
+	r.setState(Shutdown)
 }

@@ -25,7 +25,7 @@ func (r *Raft) heartBeat(peerId string, stopCh <-chan struct{}) {
 			Success: false,
 		}
 
-		err := r.trans.AppendEntries(peerId, args, &reply)
+		err := r.trans.Call(peerId, "Raft.AppendEntries", args, &reply)
 		if err != nil {
 			r.slog("failed to send AppendEntries RPC", "peerId", peerId)
 			return
