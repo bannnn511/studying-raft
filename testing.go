@@ -1,6 +1,7 @@
 package studying_raft
 
 import (
+	"fmt"
 	"log"
 	"strconv"
 	"sync"
@@ -64,56 +65,56 @@ func NewCluster(t *testing.T, n int) *Cluster {
 
 // Shutdown shuts down all the servers in the harness and waits for them to
 // stop running.
-func (h *Cluster) Shutdown() {
-	for i := 0; i < h.n; i++ {
-		h.cluster[i].DisconnectAll()
-		h.connected[i] = false
+func (c *Cluster) Shutdown() {
+	for i := 0; i < c.n; i++ {
+		c.cluster[i].DisconnectAll()
+		c.connected[i] = false
 	}
-	for i := 0; i < h.n; i++ {
-		h.cluster[i].Shutdown()
+	for i := 0; i < c.n; i++ {
+		c.cluster[i].Shutdown()
 	}
 }
 
 // DisconnectPeer disconnects a server from all other servers in the cluster.
-func (h *Cluster) DisconnectPeer(id int) {
+func (c *Cluster) DisconnectPeer(id int) {
 	tlog("Disconnect %d", id)
-	h.cluster[id].DisconnectAll()
-	for j := 0; j < h.n; j++ {
+	c.cluster[id].DisconnectAll()
+	for j := 0; j < c.n; j++ {
 		if j != id {
-			h.cluster[j].DisconnectPeer(strconv.Itoa(id))
+			c.cluster[j].DisconnectPeer(strconv.Itoa(id))
 		}
 	}
-	h.connected[id] = false
+	c.connected[id] = false
 }
 
-func (h *Cluster) ReconnectPeer(id int) {
+func (c *Cluster) ReconnectPeer(id int) {
 	tlog("Reconnect %d", id)
-	for j := 0; j < h.n; j++ {
+	for j := 0; j < c.n; j++ {
 		if j != id {
-			if err := h.cluster[id].ConnectToPeer(strconv.Itoa(j), h.cluster[j].GetListenAddr()); err != nil {
-				h.t.Fatal(err)
+			if err := c.cluster[id].ConnectToPeer(strconv.Itoa(j), c.cluster[j].GetListenAddr()); err != nil {
+				c.t.Fatal(err)
 			}
-			if err := h.cluster[j].ConnectToPeer(strconv.Itoa(id), h.cluster[id].GetListenAddr()); err != nil {
-				h.t.Fatal(err)
+			if err := c.cluster[j].ConnectToPeer(strconv.Itoa(id), c.cluster[id].GetListenAddr()); err != nil {
+				c.t.Fatal(err)
 			}
 		}
 	}
-	h.connected[id] = true
+	c.connected[id] = true
 }
 
-func (h *Cluster) CheckSingleLeader() (int, int) {
+func (c *Cluster) CheckSingleLeader() (int, int) {
 	for r := 0; r < 5; r++ {
 		leaderId := -1
 		leaderTerm := -1
-		for i := 0; i < h.n; i++ {
-			if h.connected[i] {
-				_, term, isLeader := h.cluster[i].raft.Report()
+		for i := 0; i < c.n; i++ {
+			if c.connected[i] {
+				_, term, isLeader := c.cluster[i].raft.Report()
 				if isLeader {
 					if leaderId < 0 {
 						leaderId = i
 						leaderTerm = int(term)
 					} else {
-						h.t.Fatalf("both %d and %d think they're leaders", leaderId, i)
+						c.t.Fatalf("both %d and %d think they're leaders", leaderId, i)
 					}
 				}
 			}
@@ -124,8 +125,19 @@ func (h *Cluster) CheckSingleLeader() (int, int) {
 		time.Sleep(150 * time.Millisecond)
 	}
 
-	h.t.Fatalf("leader not found")
+	c.t.Fatalf("leader not found")
 	return -1, -1
+}
+
+func (c *Cluster) CheckNoLeader() {
+	for i := 0; i < c.n; i++ {
+		if c.connected[i] {
+			_, _, isLeader := c.cluster[i].raft.Report()
+			if isLeader {
+				log.Fatal(fmt.Sprintf("server %d leader, want none", i))
+			}
+		}
+	}
 }
 
 func tlog(format string, a ...interface{}) {

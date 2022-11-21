@@ -30,3 +30,22 @@ func TestRaft_LeaderDisconnect(t *testing.T) {
 	// new term should be greater than origin terms.
 	require.Greater(t, newTerm, originTerm)
 }
+
+func TestElectionLeaderAndAnotherDisconnect(t *testing.T) {
+	cluster := NewCluster(t, 3)
+	defer cluster.Shutdown()
+
+	originLeader, _ := cluster.CheckSingleLeader()
+
+	cluster.DisconnectPeer(originLeader)
+	otherId := (originLeader + 1) % 3
+	cluster.DisconnectPeer(otherId)
+
+	// No quorum
+	sleepMs(450)
+	cluster.CheckNoLeader()
+
+	// Reconnect one other server; now we'll have quorum
+	cluster.ReconnectPeer(otherId)
+	cluster.CheckSingleLeader()
+}
