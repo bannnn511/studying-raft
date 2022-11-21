@@ -67,3 +67,24 @@ func TestDisconnectAllThenRestore(t *testing.T) {
 	}
 	cluster.CheckSingleLeader()
 }
+
+func TestElectionLeaderDisconnectThenReconnect(t *testing.T) {
+	cluster := NewCluster(t, 3)
+	defer cluster.Shutdown()
+
+	originLeader, _ := cluster.CheckSingleLeader()
+
+	cluster.DisconnectPeer(originLeader)
+
+	sleepMs(350)
+	newLeaderId, newLeaderTerm := cluster.CheckSingleLeader()
+
+	cluster.ReconnectPeer(originLeader)
+	sleepMs(150)
+
+	againLeader, againTerm := cluster.CheckSingleLeader()
+
+	require.Equal(t, newLeaderId, againLeader)
+	require.Equal(t, newLeaderTerm, againTerm)
+
+}
