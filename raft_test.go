@@ -17,11 +17,10 @@ func TestRaft_LeaderDisconnect(t *testing.T) {
 	cluster := NewCluster(t, 3)
 	defer cluster.Shutdown()
 
-	sleepMs(350)
 	originLeader, originTerm := cluster.CheckSingleLeader()
 
 	cluster.DisconnectPeer(originLeader)
-	sleepMs(5000)
+	sleepMs(300)
 
 	newLeader, newTerm := cluster.CheckSingleLeader()
 

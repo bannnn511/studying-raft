@@ -34,9 +34,9 @@ func NewCluster(t *testing.T, n int) *Cluster {
 	for i := 0; i < n; i++ {
 		peerIds := make([]string, 0)
 		for p := 0; p < n; p++ {
-			if p != i {
-				peerIds = append(peerIds, strconv.Itoa(p))
-			}
+			//if p != i {
+			peerIds = append(peerIds, strconv.Itoa(p))
+			//}
 		}
 
 		ns[i] = NewServer(i, peerIds, ready, commitChan)

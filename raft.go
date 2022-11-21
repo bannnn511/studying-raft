@@ -39,7 +39,6 @@ func (r *Raft) run() {
 		default:
 		}
 
-		r.slog("running")
 		switch r.getState() {
 		case Follower:
 			r.runFollower()
@@ -60,7 +59,6 @@ func (r *Raft) runFollower() {
 	for r.getState() == Follower {
 		select {
 		case <-heartbeatTimer:
-			r.slog("------------heartbeat")
 			// reset heartbeat timer
 			hbTimeout := r.config().HeartbeatTimeout
 			heartbeatTimer = randomTimeout(hbTimeout)
@@ -91,7 +89,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 	r.setCurrentTerm(r.getCurrentTerm() + 1)
 
 	lastLogIndex, lastLogTerm := r.getLastEntry()
-	requestVote := RequestVoteArgs{
+	req := RequestVoteArgs{
 		Term:         r.getCurrentTerm(),
 		CandidateId:  r.id,
 		LastLogIndex: lastLogIndex,
@@ -100,9 +98,13 @@ func (r *Raft) electSelf() <-chan voteResult {
 
 	askPeer := func(peerId string) {
 		reply := voteResult{voterID: peerId}
-		err := r.trans.Call(peerId, "Raft.RequestVote", requestVote, &reply.RequestVoteReply)
+		err := r.trans.Call(peerId, "Raft.RequestVote", req, &reply.RequestVoteReply)
 		if err != nil {
-			reply.Term = r.getCurrentTerm()
+			r.error("failed to make requestVote RPC",
+				"target", peerId,
+				"error", err,
+				"term", req.Term)
+			reply.Term = req.Term
 			reply.VoteGranted = false
 		}
 
@@ -111,8 +113,8 @@ func (r *Raft) electSelf() <-chan voteResult {
 
 	for _, peerId := range r.peerIds {
 		if peerId == r.id {
-			r.slog("vote for itself", "candidateId", r.id)
-			if err := r.persistVote(r.getCurrentTerm(), []byte(fmt.Sprintf("%v", peerId))); err != nil {
+			r.slog("vote for self", "term", req.Term, "candidateId", r.id)
+			if err := r.persistVote(r.getCurrentTerm(), []byte(peerId)); err != nil {
 				r.dlog("failed to persist vote")
 				return nil
 			}
@@ -125,7 +127,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 				voterID: r.id,
 			}
 		} else {
-			r.slog("sending RequestVote", "peerId", peerId)
+			r.slog("asking for vote", "term", req.Term, "peerId", peerId)
 			askPeer(peerId)
 		}
 	}
@@ -136,7 +138,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 // runCandidate runs the main loop while in Candidate state.
 func (r *Raft) runCandidate() {
 	term := r.getCurrentTerm() + 1
-	r.slog("entering Candidate state", "Candidate", r, "Term", term)
+	r.slog("entering Candidate state", "Candidate", r.id, "Term", term)
 
 	electionTimeout := r.config().ElectionTimeout
 	electionTimeoutTimer := randomTimeout(electionTimeout)
@@ -254,6 +256,7 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 
 	if req.Term > r.getCurrentTerm() {
 		r.slog("term out of date in RequestVote",
+			"candidate", req.CandidateId,
 			"currentTerm", r.getCurrentTerm(),
 			"candidateTerm", req.Term)
 		r.setCurrentTerm(req.Term)
@@ -274,8 +277,9 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 		r.slog("failed to get last vote candidate", "error", err)
 		return nil
 	}
+
 	if lastVoteTerm == req.Term && lastVoteCandidate != nil {
-		r.slog("duplicate requestVote for same term", "term", req.Term)
+		r.slog("duplicate requestVote for same term", "candidate", req.CandidateId, "term", req.Term)
 		if string(lastVoteCandidate) == req.CandidateId {
 			r.slog("duplicate requestVote from", "candidate", req.CandidateId)
 		}
@@ -340,7 +344,7 @@ func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) e
 // END: RPC
 
 func (r *Raft) persistVote(term uint64, candidate []byte) error {
-	if err := r.stable.SetUint64(keyCurrentTerm, term); err != nil {
+	if err := r.stable.SetUint64(keyLastVoteTerm, term); err != nil {
 		return err
 	}
 
@@ -362,8 +366,16 @@ func (r *Raft) dlog(format string, args ...interface{}) {
 // slog logs a debugging message is DebugCM > 0.
 func (r *Raft) slog(format string, args ...interface{}) {
 	if DebugCM > 0 {
-		format = fmt.Sprintf("[%s] ", r.id) + format
+		format = fmt.Sprintf("[%v][%s-%s] ", r.getCurrentTerm(), r.id, r.getState()) + format
 		r.logger.Infow(format, args...)
+	}
+}
+
+// slog logs a debugging message is DebugCM > 0.
+func (r *Raft) error(format string, args ...interface{}) {
+	if DebugCM > 0 {
+		format = fmt.Sprintf("[%s-%s: term-%v] ", r.id, r.getState(), r.getCurrentTerm()) + format
+		r.logger.Errorf(format, args...)
 	}
 }
 
