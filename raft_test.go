@@ -49,3 +49,21 @@ func TestElectionLeaderAndAnotherDisconnect(t *testing.T) {
 	cluster.ReconnectPeer(otherId)
 	cluster.CheckSingleLeader()
 }
+
+func TestDisconnectAllThenRestore(t *testing.T) {
+	cluster := NewCluster(t, 3)
+	defer cluster.Shutdown()
+
+	sleepMs(100)
+	for i := 0; i < 3; i++ {
+		cluster.DisconnectPeer(i)
+	}
+	sleepMs(450)
+	cluster.CheckNoLeader()
+
+	// Reconnect all servers. A leader will be found
+	for i := 0; i < 3; i++ {
+		cluster.ReconnectPeer(i)
+	}
+	cluster.CheckSingleLeader()
+}
