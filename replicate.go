@@ -1,13 +1,10 @@
 package studying_raft
 
-import "fmt"
-
 // replicate trying to replicate log entries to a single Follower.
 func (r *Raft) replicate(peerId string) {
 	stopCh := make(chan struct{}, 1)
 	defer func() {
 		close(stopCh)
-		r.slog(fmt.Sprintf("leader stop replicate to %s", peerId))
 	}()
 	r.heartBeat(peerId, stopCh)
 }

@@ -108,3 +108,45 @@ func TestElectionLeaderDisconnectThenReconnect5(t *testing.T) {
 	require.Equal(t, newLeaderId, againLeader)
 	require.Equal(t, newLeaderTerm, againTerm)
 }
+
+func TestElectionFollowerComesBack(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
+
+	c := NewCluster(t, 3)
+	defer c.Shutdown()
+
+	origLeaderId, origTerm := c.CheckSingleLeader()
+
+	otherId := (origLeaderId + 1) % 3
+	c.DisconnectPeer(otherId)
+	sleepMs(650)
+	c.ReconnectPeer(otherId)
+	sleepMs(150)
+
+	_, newTerm := c.CheckSingleLeader()
+	require.GreaterOrEqual(t, newTerm, origTerm)
+}
+
+func TestElectionDisconnectLoop(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
+
+	c := NewCluster(t, 3)
+	defer c.Shutdown()
+
+	for cycle := 0; cycle < 5; cycle++ {
+		leaderId, _ := c.CheckSingleLeader()
+
+		c.DisconnectPeer(leaderId)
+		otherId := (leaderId + 1) % 3
+		c.DisconnectPeer(otherId)
+		sleepMs(310)
+		c.CheckNoLeader()
+
+		// Reconnect both.
+		c.ReconnectPeer(otherId)
+		c.ReconnectPeer(leaderId)
+
+		// Give it time to settle
+		sleepMs(250)
+	}
+}
