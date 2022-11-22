@@ -85,5 +85,6 @@ type leaderState struct {
 }
 
 func (r *Raft) Shutdown() {
+	close(r.shutDownCh)
 	r.setState(Shutdown)
 }
