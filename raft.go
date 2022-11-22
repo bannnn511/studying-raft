@@ -199,6 +199,10 @@ func (r *Raft) setupLeaderState() {
 // and periodically send heartbeat to followers.
 func (r *Raft) startStopReplication() {
 	for _, peerId := range r.peerIds {
+		peerId := peerId
+		if r.id == peerId {
+			continue
+		}
 		r.goFunc(func() { r.replicate(peerId) })
 	}
 }
@@ -326,6 +330,7 @@ func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) e
 	}
 
 	if req.Term > r.getCurrentTerm() || r.getState() != Follower {
+		r.slog("become follower")
 		r.setState(Follower)
 		r.setCurrentTerm(req.Term)
 	}

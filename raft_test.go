@@ -86,5 +86,4 @@ func TestElectionLeaderDisconnectThenReconnect(t *testing.T) {
 
 	require.Equal(t, newLeaderId, againLeader)
 	require.Equal(t, newLeaderTerm, againTerm)
-
 }

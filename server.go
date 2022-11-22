@@ -99,7 +99,6 @@ func (s *Server) DisconnectAll() {
 }
 
 func (s *Server) Shutdown() {
-	s.raft.shutDownCh <- struct{}{}
 	s.raft.Shutdown()
 	close(s.quitCh)
 	s.listener.Close()
