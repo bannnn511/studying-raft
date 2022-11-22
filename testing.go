@@ -103,6 +103,7 @@ func (c *Cluster) ReconnectPeer(id int) {
 }
 
 func (c *Cluster) CheckSingleLeader() (int, int) {
+	c.t.Helper()
 	for r := 0; r < 5; r++ {
 		leaderId := -1
 		leaderTerm := -1
@@ -130,6 +131,7 @@ func (c *Cluster) CheckSingleLeader() (int, int) {
 }
 
 func (c *Cluster) CheckNoLeader() {
+	c.t.Helper()
 	for i := 0; i < c.n; i++ {
 		if c.connected[i] {
 			_, _, isLeader := c.cluster[i].raft.Report()
