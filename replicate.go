@@ -23,6 +23,8 @@ func (r *Raft) heartBeat(peerId string, stopCh <-chan struct{}) {
 		case <-randomTimeout(r.config().HeartbeatTimeout):
 		case <-stopCh:
 			return
+		case <-r.shutDownCh:
+			return
 		}
 
 		reply := AppendEntriesReply{
