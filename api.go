@@ -88,3 +88,18 @@ func (r *Raft) Shutdown() {
 	close(r.shutDownCh)
 	r.setState(Shutdown)
 }
+
+func (r *Raft) Submit(command interface{}) bool {
+	r.leaderLock.Lock()
+	defer r.leaderLock.Unlock()
+
+	r.slog("Submit received by %v: %v", r.getState(), command)
+	if r.getState() == Leader {
+		r.log = append(r.log, CommitEntry{
+			Command: command,
+			Term:    r.getCurrentTerm(),
+		})
+		return true
+	}
+	return false
+}
