@@ -17,6 +17,7 @@ type commitment struct {
 	startIndex uint64
 }
 
+// newCommitment returns
 func newCommitment(commitCh chan struct{}, peerIds []string, startIndex uint64) *commitment {
 	matchIndexes := make(map[string]uint64)
 	for _, server := range peerIds {
@@ -29,4 +30,10 @@ func newCommitment(commitCh chan struct{}, peerIds []string, startIndex uint64) 
 		commitIndex:  0,
 		startIndex:   startIndex,
 	}
+}
+
+func (c commitment) getCommitIndex() uint64 {
+	c.Lock()
+	defer c.Unlock()
+	return c.commitIndex
 }
