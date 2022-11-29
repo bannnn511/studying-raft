@@ -1,6 +1,9 @@
 package studying_raft
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
 
 type commitment struct {
 	// protects matchIndexes and commitIndex
@@ -17,7 +20,8 @@ type commitment struct {
 	startIndex uint64
 }
 
-// newCommitment returns
+// newCommitment returns a commitment struct that notifies the provided channel
+// when log entries have been committed.
 func newCommitment(commitCh chan struct{}, peerIds []string, startIndex uint64) *commitment {
 	matchIndexes := make(map[string]uint64)
 	for _, server := range peerIds {
@@ -32,8 +36,35 @@ func newCommitment(commitCh chan struct{}, peerIds []string, startIndex uint64) 
 	}
 }
 
-func (c commitment) getCommitIndex() uint64 {
+func (c *commitment) getCommitIndex() uint64 {
 	c.Lock()
 	defer c.Unlock()
 	return c.commitIndex
+}
+
+func (c *commitment) match(server string, matchIndex uint64) {
+	c.Lock()
+	defer c.Unlock()
+	if prev, hasVote := c.matchIndexes[server]; matchIndex > prev && hasVote {
+		c.matchIndexes[server] = matchIndex
+		c.recalculate()
+	}
+}
+
+func (c *commitment) recalculate() {
+	if len(c.matchIndexes) == 0 {
+		return
+	}
+
+	matched := make([]uint64, 0, len(c.matchIndexes))
+	for _, idx := range c.matchIndexes {
+		matched = append(matched, idx)
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		return matched[i] < matched[j]
+	})
+	quorumMatchIndex := matched[(len(matched)+1)/2]
+	if quorumMatchIndex > c.commitIndex && quorumMatchIndex >= c.startIndex {
+		c.commitIndex = quorumMatchIndex
+	}
 }

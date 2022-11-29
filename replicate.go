@@ -18,6 +18,9 @@ type followerReplication struct {
 	// nextIndex is the index of the next log entry to send to the follower,
 	// which may fall past the end of the log.
 	nextIndex uint64
+
+	// commitment tracks the entries acknowledged
+	commitment *commitment
 }
 
 // replicate trying to replicate log entries to a single Follower.
@@ -88,6 +91,9 @@ func (r *Raft) replicateTo(s *followerReplication, lastIndex uint64) {
 		r.error("failed to AppendEntries to", "peerId", s.id, "err", err)
 	}
 
+	// START: Leader receiving log acknowledgements.
+
+	// check for newer term, stop running
 	if reply.Term > r.getCurrentTerm() {
 		r.slog("peer has newer term, stopping replication", "peer", s.id)
 		r.setState(Follower)
@@ -96,10 +102,21 @@ func (r *Raft) replicateTo(s *followerReplication, lastIndex uint64) {
 
 	r.setLastContact()
 
+	// update s based on success
 	if reply.Success {
-
+		updateLastAppended(s, &req)
 	} else {
 		atomic.StoreUint64(&s.nextIndex, s.nextIndex-1)
 		r.slog("AppendEntries failed, sending older logs", "peer", s.id, "next", atomic.LoadUint64(&s.nextIndex))
+	}
+	// END: Leader receiving log acknowledgements.
+}
+
+// updateLastAppended is used to update follower replication state after a successful AppendEntries RPC.
+func updateLastAppended(s *followerReplication, req *AppendEntriesArgs) {
+	if logs := req.Entries; len(logs) > 0 {
+		last := logs[len(logs)-1]
+		atomic.StoreUint64(&s.nextIndex, last.Index-1)
+		s.commitment.match(s.id, last.Index)
 	}
 }
