@@ -377,7 +377,7 @@ func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) e
 			}
 		}
 
-		// TODO: update the commit index
+		// update the commit index
 		if req.LeaderCommit > 0 && req.LeaderCommit > r.getCommitIndex() {
 			idx := min(req.LeaderCommit, r.getLastIndex())
 			r.setCommitIndex(idx)
