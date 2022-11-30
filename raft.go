@@ -14,20 +14,6 @@ var (
 
 type CMState int
 
-// CommitEntry is the data reported by raft to the commit channel.
-// Each entry notifies the client that consensus was reached on a command and
-// it can be applied to client's state machine.
-type CommitEntry struct {
-	// Command is the client command being committed.
-	Command interface{}
-
-	// Index is the log index at which the client command is committed.
-	Index uint64
-
-	// Term is the Raft term at which the client command is committed
-	Term uint64
-}
-
 const DebugCM = 1
 
 func (r *Raft) run() {
@@ -193,17 +179,28 @@ func (r *Raft) setLeader(id string) {
 func (r *Raft) setupLeaderState() {
 	r.leaderState.commitCh = make(chan struct{}, 1)
 	r.leaderState.stepDown = make(chan struct{}, 1)
+	r.leaderState.commitment = newCommitment(r.leaderState.commitCh, r.peerIds, r.getLastIndex())
 }
 
 // startStopReplication called on the leader whenever there is a message in the log
 // and periodically send heartbeat to followers.
 func (r *Raft) startStopReplication() {
+	lastIdx := r.getLastIndex()
+
 	for _, peerId := range r.peerIds {
 		peerId := peerId
 		if r.id == peerId {
 			continue
 		}
-		r.goFunc(func() { r.replicate(peerId) })
+		s := &followerReplication{
+			id:          r.id,
+			currentTerm: r.getCurrentTerm(),
+			triggerCh:   make(chan struct{}, 1),
+			stopCh:      make(chan struct{}, 1),
+			nextIndex:   lastIdx + 1,
+			commitment:  r.leaderState.commitment,
+		}
+		r.goFunc(func() { r.replicate(s) })
 	}
 }
 
@@ -336,9 +333,56 @@ func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) e
 	}
 
 	r.setLeader(req.LeaderId)
-	// TODO: verify last log entry
-	// TODO: process new entry
-	// TODO: update the commit index
+	if req.PrevLogIndex > 0 {
+		// verify last log entry.
+		logOk := false
+		lastEntryIdx, lastEntryTerm := r.getLastEntry()
+		if lastEntryIdx >= req.PrevLogIndex &&
+			(req.PrevLogIndex == 0 || lastEntryTerm == req.PrevLogTerm) {
+			logOk = true
+		}
+		if !logOk {
+			r.error("last log entry mismatch",
+				"follower last entry term", lastEntryTerm,
+				"leader previous term", req.PrevLogTerm,
+				"follower last entry index", lastEntryIdx,
+				"leader previous entry index", req.PrevLogIndex,
+			)
+			return nil
+		}
+
+		// process new entry
+		if len(req.Entries) > 0 {
+			// delete any conflicting entries, skip any duplicates
+			var newEntries Log
+			lastLogIdx, _ := r.getLastEntry()
+			for i, entry := range req.Entries {
+				if entry.Index > lastLogIdx {
+					newEntries = req.Entries[i:]
+					break
+				}
+
+				lastLog := r.log[len(r.log)-1]
+				if entry.Term != lastLog.Term {
+					r.log = r.log.deleteRange(int(entry.Index), int(lastLogIdx))
+					newEntries = req.Entries[i:]
+					break
+				}
+			}
+
+			if n := len(newEntries); n > 0 {
+				r.log = append(r.log, newEntries...)
+				last := r.log[n-1]
+				r.setLastEntry(last)
+			}
+		}
+
+		// TODO: update the commit index
+		if req.LeaderCommit > 0 && req.LeaderCommit > r.getCommitIndex() {
+			idx := min(req.LeaderCommit, r.getLastIndex())
+			r.setCommitIndex(idx)
+		}
+	}
 
 	reply.Success = true
 	r.setLastContact()

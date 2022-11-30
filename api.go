@@ -47,7 +47,7 @@ type Raft struct {
 	// It provides stable storage for many fields in raftState
 	stable StableStore
 
-	log []CommitEntry
+	log Log
 
 	shutDownCh chan struct{}
 
@@ -80,8 +80,9 @@ func NewRaft(id string, config *Config, peerIds []string, server *Server, store 
 }
 
 type leaderState struct {
-	commitCh chan struct{}
-	stepDown chan struct{}
+	commitCh   chan struct{}
+	stepDown   chan struct{}
+	commitment *commitment
 }
 
 func (r *Raft) Shutdown() {

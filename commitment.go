@@ -51,6 +51,9 @@ func (c *commitment) match(server string, matchIndex uint64) {
 	}
 }
 
+// recalculate calculates commitIndex from matchIndexes.
+// If a quorum is met then update commitIndex.
+// Must be called with lock hold.
 func (c *commitment) recalculate() {
 	if len(c.matchIndexes) == 0 {
 		return

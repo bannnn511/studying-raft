@@ -39,7 +39,7 @@ type AppendEntriesArgs struct {
 	LeaderCommit uint64
 
 	// log entries to store.
-	Entries []CommitEntry
+	Entries Log
 }
 
 type AppendEntriesReply struct {
