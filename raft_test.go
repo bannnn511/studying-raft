@@ -1,6 +1,8 @@
 package studying_raft
 
 import (
+	"fmt"
+	"log"
 	"testing"
 	"time"
 
@@ -149,4 +151,19 @@ func TestElectionDisconnectLoop(t *testing.T) {
 		// Give it time to settle
 		sleepMs(250)
 	}
+}
+
+func TestCommitOneCommand(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 100*time.Millisecond)
+
+	c := NewCluster(t, 3)
+	defer c.Shutdown()
+
+	origLeaderId, _ := c.CheckSingleLeader()
+	log.Printf("submitting 42 to %d\n", origLeaderId)
+	isLeader := c.SubmitToServer(origLeaderId, 42)
+	require.True(t, isLeader, fmt.Sprintf("want id=%d leader, but it's not", origLeaderId))
+
+	sleepMs(250)
+	c.CheckCommittedN(42, 3)
 }

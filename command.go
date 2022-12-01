@@ -1,6 +1,6 @@
 package studying_raft
 
-type RequestVoteArgs struct {
+type RequestVoteReq struct {
 	// Term is candidate's term.
 	Term uint64
 
@@ -14,7 +14,7 @@ type RequestVoteArgs struct {
 	LastLogTerm uint64
 }
 
-type RequestVoteReply struct {
+type RequestVoteResp struct {
 	// Term is current term for candidate to update itself.
 	Term uint64
 
@@ -22,7 +22,7 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
-type AppendEntriesArgs struct {
+type AppendEntriesReq struct {
 	// Term is leader term.
 	Term uint64
 
@@ -39,10 +39,10 @@ type AppendEntriesArgs struct {
 	LeaderCommit uint64
 
 	// log entries to store.
-	Entries []CommitEntry
+	Entries Log
 }
 
-type AppendEntriesReply struct {
+type AppendEntriesResp struct {
 	// current term for leader to update itself.
 	Term uint64
 

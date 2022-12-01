@@ -150,14 +150,13 @@ func (s *Server) Call(id string, serviceMethod string, args interface{}, reply i
 	} else {
 		return peer.Call(serviceMethod, args, reply)
 	}
-	return nil
 }
 
 type RpcProxy struct {
 	raft *Raft
 }
 
-func (rpp *RpcProxy) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error {
+func (rpp *RpcProxy) RequestVote(args RequestVoteReq, reply *RequestVoteResp) error {
 	if len(os.Getenv("RAFT_UNRELIABLE_RPC")) > 0 {
 		dice := rand.Intn(10)
 		if dice == 9 {
@@ -173,7 +172,7 @@ func (rpp *RpcProxy) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) 
 	return rpp.raft.RequestVote(args, reply)
 }
 
-func (rpp *RpcProxy) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) error {
+func (rpp *RpcProxy) AppendEntries(args AppendEntriesReq, reply *AppendEntriesResp) error {
 	if len(os.Getenv("RAFT_UNRELIABLE_RPC")) > 0 {
 		dice := rand.Intn(10)
 		if dice == 9 {

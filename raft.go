@@ -14,20 +14,6 @@ var (
 
 type CMState int
 
-// CommitEntry is the data reported by raft to the commit channel.
-// Each entry notifies the client that consensus was reached on a command and
-// it can be applied to client's state machine.
-type CommitEntry struct {
-	// Command is the client command being committed.
-	Command interface{}
-
-	// Index is the log index at which the client command is committed.
-	Index uint64
-
-	// Term is the Raft term at which the client command is committed
-	Term uint64
-}
-
 const DebugCM = 1
 
 func (r *Raft) run() {
@@ -80,7 +66,7 @@ func (r *Raft) runFollower() {
 
 // START: CANDIDATE
 type voteResult struct {
-	RequestVoteReply
+	RequestVoteResp
 	voterID string
 }
 
@@ -89,7 +75,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 	r.setCurrentTerm(r.getCurrentTerm() + 1)
 
 	lastLogIndex, lastLogTerm := r.getLastEntry()
-	req := RequestVoteArgs{
+	req := RequestVoteReq{
 		Term:         r.getCurrentTerm(),
 		CandidateId:  r.id,
 		LastLogIndex: lastLogIndex,
@@ -98,7 +84,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 
 	askPeer := func(peerId string) {
 		reply := voteResult{voterID: peerId}
-		err := r.trans.Call(peerId, "Raft.RequestVote", req, &reply.RequestVoteReply)
+		err := r.trans.Call(peerId, "Raft.RequestVote", req, &reply.RequestVoteResp)
 		if err != nil {
 			r.error("failed to make requestVote RPC",
 				"target", peerId,
@@ -120,7 +106,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 			}
 
 			respCh <- voteResult{
-				RequestVoteReply: RequestVoteReply{
+				RequestVoteResp: RequestVoteResp{
 					Term:        r.getCurrentTerm(),
 					VoteGranted: true,
 				},
@@ -193,17 +179,28 @@ func (r *Raft) setLeader(id string) {
 func (r *Raft) setupLeaderState() {
 	r.leaderState.commitCh = make(chan struct{}, 1)
 	r.leaderState.stepDown = make(chan struct{}, 1)
+	r.leaderState.commitment = newCommitment(r.leaderState.commitCh, r.peerIds, r.getLastIndex())
 }
 
 // startStopReplication called on the leader whenever there is a message in the log
 // and periodically send heartbeat to followers.
 func (r *Raft) startStopReplication() {
+	lastIdx := r.getLastIndex()
+
 	for _, peerId := range r.peerIds {
 		peerId := peerId
 		if r.id == peerId {
 			continue
 		}
-		r.goFunc(func() { r.replicate(peerId) })
+		s := &followerReplication{
+			id:          r.id,
+			currentTerm: r.getCurrentTerm(),
+			triggerCh:   make(chan struct{}, 1),
+			stopCh:      make(chan struct{}, 1),
+			nextIndex:   lastIdx + 1,
+			commitment:  r.leaderState.commitment,
+		}
+		r.goFunc(func() { r.replicate(s) })
 	}
 }
 
@@ -221,7 +218,6 @@ func (r *Raft) runLeader() {
 		// nil vs closed channel ?
 		r.leaderState.commitCh = nil
 		r.leaderState.stepDown = nil
-
 	}()
 
 	r.startStopReplication()
@@ -234,13 +230,12 @@ func (r *Raft) leaderLoop() {
 		select {
 		case <-r.shutDownCh:
 			return
-		// TODO: handle leaderState signal
 		case <-r.leaderState.commitCh:
+			newCommitIndex := r.leaderState.commitment.getCommitIndex()
+			r.setCommitIndex(newCommitIndex)
 		case <-r.leaderState.stepDown:
-			/*
-				case leader lease:
-				check
-			*/
+			r.slog("stepping down")
+			return
 		}
 	}
 }
@@ -249,7 +244,7 @@ func (r *Raft) leaderLoop() {
 
 // START: RPC
 
-func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
+func (r *Raft) RequestVote(req RequestVoteReq, resp *RequestVoteResp) error {
 	resp.Term = r.getCurrentTerm()
 	resp.VoteGranted = false
 
@@ -263,6 +258,7 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 			"candidate", req.CandidateId,
 			"currentTerm", r.getCurrentTerm(),
 			"candidateTerm", req.Term)
+		r.leaderState.stepDown <- struct{}{}
 		r.setCurrentTerm(req.Term)
 		r.setState(Follower)
 		resp.Term = req.Term
@@ -320,7 +316,7 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 	return nil
 }
 
-func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) error {
+func (r *Raft) AppendEntries(req AppendEntriesReq, reply *AppendEntriesResp) error {
 	reply.Term = r.getCurrentTerm()
 	reply.Success = false
 
@@ -336,9 +332,57 @@ func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) e
 	}
 
 	r.setLeader(req.LeaderId)
-	// TODO: verify last log entry
-	// TODO: process new entry
-	// TODO: update the commit index
+	if req.PrevLogIndex > 0 {
+		// verify last log entry.
+		logOk := false
+		lastEntryIdx, lastEntryTerm := r.getLastEntry()
+		if lastEntryIdx >= req.PrevLogIndex &&
+			(req.PrevLogIndex == 0 || lastEntryTerm == req.PrevLogTerm) {
+			logOk = true
+		}
+		if !logOk {
+			r.error("last log entry mismatch",
+				"follower last entry term", lastEntryTerm,
+				"leader previous term", req.PrevLogTerm,
+				"follower last entry index", lastEntryIdx,
+				"leader previous entry index", req.PrevLogIndex,
+			)
+			return nil
+		}
+
+		// process new entry
+		if len(req.Entries) > 0 {
+			// delete any conflicting entries, skip any duplicates
+			var newEntries Log
+			lastLogIdx, _ := r.getLastEntry()
+			for i, entry := range req.Entries {
+				if entry.Index > lastLogIdx {
+					newEntries = req.Entries[i:]
+					break
+				}
+
+				lastLog := r.log[len(r.log)-1]
+				if entry.Term != lastLog.Term {
+					r.log = r.log.deleteRange(int(entry.Index), int(lastLogIdx))
+					newEntries = req.Entries[i:]
+					break
+				}
+			}
+
+			if n := len(newEntries); n > 0 {
+				r.log = append(r.log, newEntries...)
+				last := r.log[n-1]
+				r.setLastEntry(last)
+			}
+		}
+
+		// update the commit index
+		if req.LeaderCommit > 0 && req.LeaderCommit > r.getCommitIndex() {
+			idx := min(req.LeaderCommit, r.getLastIndex())
+			r.setCommitIndex(idx)
+			r.processLog(idx)
+		}
+	}
 
 	reply.Success = true
 	r.setLastContact()
@@ -371,7 +415,7 @@ func (r *Raft) dlog(format string, args ...interface{}) {
 // slog logs a debugging message is DebugCM > 0.
 func (r *Raft) slog(format string, args ...interface{}) {
 	if DebugCM > 0 {
-		format = fmt.Sprintf("[%v][%s-%s] ", r.getCurrentTerm(), r.id, r.getState()) + format
+		format = fmt.Sprintf("[%s-%s] ", r.id, r.getState()) + format
 		r.logger.Infow(format, args...)
 	}
 }
@@ -379,8 +423,8 @@ func (r *Raft) slog(format string, args ...interface{}) {
 // slog logs a debugging message is DebugCM > 0.
 func (r *Raft) error(format string, args ...interface{}) {
 	if DebugCM > 0 {
-		format = fmt.Sprintf("[%s-%s: term-%v] ", r.id, r.getState(), r.getCurrentTerm()) + format
-		r.logger.Errorf(format, args...)
+		format = fmt.Sprintf("[%s-%s]", r.id, r.getState()) + format
+		r.logger.Errorw(format, args...)
 	}
 }
 
@@ -411,4 +455,23 @@ func (r *Raft) quorumSize() int {
 // Report reports the state of this CM.
 func (r *Raft) Report() (id string, term uint64, isLeader bool) {
 	return r.id, r.getCurrentTerm(), r.getState() == Leader
+}
+
+// processLog applies all committed entries that haven't been applied
+// up to the given index limit.
+// Follower call this from AppendEntries.
+func (r *Raft) processLog(index uint64) {
+	lastApplied := r.getLastApplied()
+	if index <= lastApplied {
+		r.error("skipping application of old log", "index", index, "lastApplied", lastApplied)
+	}
+
+	savedTerm := r.getCurrentTerm()
+	for idx := lastApplied + 1; idx <= index; idx++ {
+		r.commitChan <- CommitEntry{
+			Command: r.log[idx],
+			Index:   lastApplied + idx + 1,
+			Term:    savedTerm,
+		}
+	}
 }
