@@ -30,7 +30,7 @@ type Raft struct {
 
 	// commitChan is the channel where this CM is going to report committed log
 	// entries. It's passed in by the client during construction.
-	commitChan chan<- CommitEntry
+	commitChan chan CommitEntry
 
 	// newCommitReadyChan is an internal notification channel used by goroutines
 	// that commit new entries to the log to notify that these entries may be sent
@@ -94,7 +94,7 @@ func (r *Raft) Submit(command interface{}) bool {
 	r.leaderLock.Lock()
 	defer r.leaderLock.Unlock()
 
-	r.slog("Submit received by %v: %v", r.getState(), command)
+	//r.slog("Submit received by %v: %v", r.getState(), command)
 	if r.getState() == Leader {
 		r.log = append(r.log, CommitEntry{
 			Command: command,

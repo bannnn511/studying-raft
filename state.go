@@ -113,6 +113,14 @@ func (r *raftState) getLastIndex() uint64 {
 	return r.lastLogIndex
 }
 
+func (r *raftState) getLastApplied() uint64 {
+	return atomic.LoadUint64(&r.lastApplied)
+}
+
+func (r *raftState) setLastApplied(index uint64) {
+	atomic.StoreUint64(&r.lastApplied, index)
+}
+
 func (r *raftState) goFunc(f func()) {
 	r.routinesGroup.Add(1)
 	go func() {

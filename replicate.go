@@ -44,7 +44,7 @@ func (r *Raft) replicate(s *followerReplication) {
 
 // heartBeat send AppendEntries RPC to follower.
 func (r *Raft) heartBeat(s *followerReplication, stopCh <-chan struct{}) {
-	args := AppendEntriesArgs{
+	args := AppendEntriesReq{
 		Term:     s.currentTerm,
 		LeaderId: r.id,
 	}
@@ -57,14 +57,14 @@ func (r *Raft) heartBeat(s *followerReplication, stopCh <-chan struct{}) {
 			return
 		}
 
-		reply := AppendEntriesReply{
+		reply := AppendEntriesResp{
 			Term:    r.getCurrentTerm(),
 			Success: false,
 		}
 
 		err := r.trans.Call(s.id, "Raft.AppendEntries", args, &reply)
 		if err != nil {
-			r.slog("failed to send heartbeat AppendEntries RPC", "peerId", s.id)
+			r.error("failed to send heartbeat AppendEntries RPC", "peerId", s.id)
 			// return will violate one leader rule
 			// because previous leader does not know about new leader.
 			//return
@@ -77,7 +77,7 @@ func (r *Raft) heartBeat(s *followerReplication, stopCh <-chan struct{}) {
 // up a given last index.
 func (r *Raft) replicateTo(s *followerReplication, lastIndex uint64) {
 	lastLogIdx, lastLogTerm := r.getLastEntry()
-	req := AppendEntriesArgs{
+	req := AppendEntriesReq{
 		Term:         s.currentTerm,
 		LeaderId:     r.id,
 		PrevLogIndex: lastLogIdx,
@@ -86,7 +86,7 @@ func (r *Raft) replicateTo(s *followerReplication, lastIndex uint64) {
 		Entries:      nil,
 	}
 
-	var reply AppendEntriesReply
+	var reply AppendEntriesResp
 	if err := r.trans.Call(s.id, "Raft.AppendEntries", req, &reply); err != nil {
 		r.error("failed to AppendEntries to", "peerId", s.id, "err", err)
 	}
@@ -113,7 +113,7 @@ func (r *Raft) replicateTo(s *followerReplication, lastIndex uint64) {
 }
 
 // updateLastAppended is used to update follower replication state after a successful AppendEntries RPC.
-func updateLastAppended(s *followerReplication, req *AppendEntriesArgs) {
+func updateLastAppended(s *followerReplication, req *AppendEntriesReq) {
 	if logs := req.Entries; len(logs) > 0 {
 		last := logs[len(logs)-1]
 		atomic.StoreUint64(&s.nextIndex, last.Index-1)

@@ -70,4 +70,5 @@ func (c *commitment) recalculate() {
 	if quorumMatchIndex > c.commitIndex && quorumMatchIndex >= c.startIndex {
 		c.commitIndex = quorumMatchIndex
 	}
+	asyncNotifyCh(c.commitCh)
 }

@@ -66,7 +66,7 @@ func (r *Raft) runFollower() {
 
 // START: CANDIDATE
 type voteResult struct {
-	RequestVoteReply
+	RequestVoteResp
 	voterID string
 }
 
@@ -75,7 +75,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 	r.setCurrentTerm(r.getCurrentTerm() + 1)
 
 	lastLogIndex, lastLogTerm := r.getLastEntry()
-	req := RequestVoteArgs{
+	req := RequestVoteReq{
 		Term:         r.getCurrentTerm(),
 		CandidateId:  r.id,
 		LastLogIndex: lastLogIndex,
@@ -84,7 +84,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 
 	askPeer := func(peerId string) {
 		reply := voteResult{voterID: peerId}
-		err := r.trans.Call(peerId, "Raft.RequestVote", req, &reply.RequestVoteReply)
+		err := r.trans.Call(peerId, "Raft.RequestVote", req, &reply.RequestVoteResp)
 		if err != nil {
 			r.error("failed to make requestVote RPC",
 				"target", peerId,
@@ -106,7 +106,7 @@ func (r *Raft) electSelf() <-chan voteResult {
 			}
 
 			respCh <- voteResult{
-				RequestVoteReply: RequestVoteReply{
+				RequestVoteResp: RequestVoteResp{
 					Term:        r.getCurrentTerm(),
 					VoteGranted: true,
 				},
@@ -218,7 +218,6 @@ func (r *Raft) runLeader() {
 		// nil vs closed channel ?
 		r.leaderState.commitCh = nil
 		r.leaderState.stepDown = nil
-
 	}()
 
 	r.startStopReplication()
@@ -231,13 +230,12 @@ func (r *Raft) leaderLoop() {
 		select {
 		case <-r.shutDownCh:
 			return
-		// TODO: handle leaderState signal
 		case <-r.leaderState.commitCh:
+			newCommitIndex := r.leaderState.commitment.getCommitIndex()
+			r.setCommitIndex(newCommitIndex)
 		case <-r.leaderState.stepDown:
-			/*
-				case leader lease:
-				check
-			*/
+			r.slog("stepping down")
+			return
 		}
 	}
 }
@@ -246,7 +244,7 @@ func (r *Raft) leaderLoop() {
 
 // START: RPC
 
-func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
+func (r *Raft) RequestVote(req RequestVoteReq, resp *RequestVoteResp) error {
 	resp.Term = r.getCurrentTerm()
 	resp.VoteGranted = false
 
@@ -260,6 +258,7 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 			"candidate", req.CandidateId,
 			"currentTerm", r.getCurrentTerm(),
 			"candidateTerm", req.Term)
+		r.leaderState.stepDown <- struct{}{}
 		r.setCurrentTerm(req.Term)
 		r.setState(Follower)
 		resp.Term = req.Term
@@ -317,7 +316,7 @@ func (r *Raft) RequestVote(req RequestVoteArgs, resp *RequestVoteReply) error {
 	return nil
 }
 
-func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) error {
+func (r *Raft) AppendEntries(req AppendEntriesReq, reply *AppendEntriesResp) error {
 	reply.Term = r.getCurrentTerm()
 	reply.Success = false
 
@@ -381,6 +380,7 @@ func (r *Raft) AppendEntries(req AppendEntriesArgs, reply *AppendEntriesReply) e
 		if req.LeaderCommit > 0 && req.LeaderCommit > r.getCommitIndex() {
 			idx := min(req.LeaderCommit, r.getLastIndex())
 			r.setCommitIndex(idx)
+			r.processLog(idx)
 		}
 	}
 
@@ -415,7 +415,7 @@ func (r *Raft) dlog(format string, args ...interface{}) {
 // slog logs a debugging message is DebugCM > 0.
 func (r *Raft) slog(format string, args ...interface{}) {
 	if DebugCM > 0 {
-		format = fmt.Sprintf("[%v][%s-%s] ", r.getCurrentTerm(), r.id, r.getState()) + format
+		format = fmt.Sprintf("[%s-%s] ", r.id, r.getState()) + format
 		r.logger.Infow(format, args...)
 	}
 }
@@ -423,8 +423,8 @@ func (r *Raft) slog(format string, args ...interface{}) {
 // slog logs a debugging message is DebugCM > 0.
 func (r *Raft) error(format string, args ...interface{}) {
 	if DebugCM > 0 {
-		format = fmt.Sprintf("[%s-%s: term-%v] ", r.id, r.getState(), r.getCurrentTerm()) + format
-		r.logger.Errorf(format, args...)
+		format = fmt.Sprintf("[%s-%s]", r.id, r.getState()) + format
+		r.logger.Errorw(format, args...)
 	}
 }
 
@@ -455,4 +455,23 @@ func (r *Raft) quorumSize() int {
 // Report reports the state of this CM.
 func (r *Raft) Report() (id string, term uint64, isLeader bool) {
 	return r.id, r.getCurrentTerm(), r.getState() == Leader
+}
+
+// processLog applies all committed entries that haven't been applied
+// up to the given index limit.
+// Follower call this from AppendEntries.
+func (r *Raft) processLog(index uint64) {
+	lastApplied := r.getLastApplied()
+	if index <= lastApplied {
+		r.error("skipping application of old log", "index", index, "lastApplied", lastApplied)
+	}
+
+	savedTerm := r.getCurrentTerm()
+	for idx := lastApplied + 1; idx <= index; idx++ {
+		r.commitChan <- CommitEntry{
+			Command: r.log[idx],
+			Index:   lastApplied + idx + 1,
+			Term:    savedTerm,
+		}
+	}
 }
